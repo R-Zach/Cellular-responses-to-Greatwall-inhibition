@@ -1,0 +1,1697 @@
+---
+title: "Immunofluorescence_Analysis_Script"
+output: html_document
+date: "2023-05-25"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Loading Libraries
+```{r message=FALSE, warning=FALSE, paged.print=FALSE}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(ggforce)
+library(ggExtra)
+library(grid)
+library(gridExtra)
+library(ggridges)
+library(ggbeeswarm)
+library(gghalves)
+library(cowplot)
+library(gplots)
+library(lattice)
+library(ggthemes)
+library(scales)
+library(seqinr)
+library(tidyverse)
+library(Dict)
+library(viridis)
+library(latex2exp)
+library(ggnewscale)
+library(ggh4x)
+library(extrafont)
+library(gtable)
+library(rstatix)
+library(drc)
+library(modelr)
+library(readxl)
+library(pracma)
+```
+
+## Establishing paths to data and results folders
+```{r}
+path_data <- ### Path to   IF_single-cell_C-604_RO-3306.csv
+path_results <- ### Path to an export folder
+```
+
+## Establishing ggplot theme arguments
+```{r}
+graph_theme <- theme(
+  plot.margin = margin(b = 0.2, l = 0.2, t = 0.2, r = 0.2, unit = "lines"),
+  text = element_text(size = 1, family = "Arial"),
+  panel.spacing.y = unit(0.1, "lines"),
+  panel.spacing.x = unit(0.1, "lines"),
+  panel.border = element_rect(colour = "#000000", fill = NA, linewidth = 0.5),
+  panel.background = element_blank(),
+  panel.grid.major.y = element_blank(),
+  panel.grid.minor.y = element_blank(),
+  panel.grid.major.x = element_blank(),
+  panel.grid.minor.x = element_blank(),
+  strip.background = element_blank(),
+  strip.text.x = element_text(colour = "#000000", size = 6, margin = margin(b = 2, t = 2), vjust = 0, family = "Arial"),
+  strip.text.y = element_text(colour = "#000000", size = 6, margin = margin(l = 2), family = "Arial"),
+  strip.clip = "off",
+  axis.ticks.x = element_line(colour = "#000000", linewidth = 0.35),
+  axis.ticks.y = element_line(colour = "#000000", linewidth = 0.35),
+  axis.ticks.length = unit(0.1, "lines"),
+  axis.title.x = element_text(colour = "#000000", size = 6, margin = margin(t = 3), family = "Arial"),
+  axis.title.y = element_text(colour = "#000000", size = 6, margin = margin(r = 2), family = "Arial"),
+  axis.text.x = element_text(colour = "#000000", size = 6, margin = margin(t = 2), family = "Arial"),
+  axis.text.y = element_text(colour = "#000000", size = 6, margin = margin(r = 2), family = "Arial"),
+  plot.title = element_blank(),
+  legend.key = element_rect(fill = "#FFFFFF"),
+  legend.position = "none",
+  legend.justification = "left",
+  legend.key.width = unit(2, 'pt'),
+  legend.key.height = unit(2, 'pt'),
+  legend.text = element_text(colour = "#000000", size = 6, margin = margin(r = 1)),
+  legend.margin = margin(r = 0, b = 0, l = 0, t = 0),
+  legend.title = element_blank())
+```
+
+## Establishing colour pallette
+```{r}
+colour_pallette <- c("#D4D3CF", "#DC6B83", "#75B1CE", "#D8C367", "#526C94", "#000000", "#ccdba2", "#889466", "#c6b2d1", "#654875")
+```
+
+## Establishing a function to normalise the raw IF data
+```{r}
+fun_normalise <- function (data, values, ref, bins = 100) {
+
+  # Constructing the subset data-set containing the control data
+  
+  for (v in values) {
+    
+    if (v == "DAPI_total") {data.ref <- filter(data, condition %in% ref, EdU == "negative")}
+    else {data.ref <- subset(data, condition %in% ref)}
+
+    # log10-transformation of the data
+    data.ref <- mutate(data.ref, value_log2 = log2(!!sym(v)))
+    
+    # Construction of the histogram
+    histogram <- hist(x = data.ref$value_log2,
+                      breaks = bins,
+                      main = paste(unique(data$experiment), unique(data$cell_line), sep = " "),
+                      xlab = paste("log2", v, sep = " "))
+    
+    # Selection of the histogram index (bin) with the highest number of observations
+    index_max <- match(max(histogram$counts), histogram$counts)
+    
+    # Determination of the mid-log10-value of the bin with the highest number of observations
+    value_max <- histogram$mids[index_max]
+    
+    # Determination of the normalisation factor (reversing the log10-transformation)
+    normalisation_factor <- 2 ^ value_max
+    
+    # Normalisation of the original values
+    data <- mutate(data, !!sym(paste(v, "norm", sep = "_")) := !!sym(v) / normalisation_factor)
+    
+    # Normalised DAPI intensities are multiplied by 2 so G1 populations center around 2 (2N) and G2 populations center around 4 (4N)
+    if (v == "DAPI_total") {data <- mutate(data, !!sym(paste(v, "norm", sep = "_")) := 2 * !!sym(paste(v, "norm", sep = "_")))}
+  }
+  return(data)
+}
+```
+
+## Establishing a function to establish density of points on a scatter plot
+```{r}
+get_density <- function(x, y, ...) {
+  dens <- MASS::kde2d(x, y, ...)
+  ix <- findInterval(x, dens$x)
+  iy <- findInterval(y, dens$y)
+  ii <- cbind(ix, iy)
+  return(dens$z[ii])
+}
+```
+
+## Creating a dataframe containing Hoechst, EdU and p21 intensity thresholds
+```{r}
+data_thresholds <- bind_rows(data.frame(feature = "Hoechst", T1 = 1.5, T2 = 3, T3 = 6),
+                             data.frame(feature = "EdU", T1 = 1.5, T2 = NA, T3 = NA),
+                             data.frame(feature = "p21", T1 = 1.2, T2 = NA, T3 = NA))
+
+data_thresholds
+```
+
+## Importing data
+```{r}
+data_raw = data.frame()
+
+for (file in list.files(path_data, pattern = ".csv")) {
+  
+  tmp.data <- read.csv(paste(path_data, file, sep = "/"), sep = ",") %>%
+    mutate(experiment = file) %>%
+    separate(col = "Condition", into = c("RO3306", "C604"), sep = "_", remove = FALSE) %>%
+    dplyr::rename(cell_line = Cell_Line, condition = Condition, cyto_id = Cyto_ID) %>%
+    dplyr::select(-X)
+  
+  data_raw = bind_rows(data_raw, tmp.data)
+  rm(tmp.data)
+}
+
+write.csv(data_raw, paste(path_data_export, "IF_data_raw_C604_RO3306.csv"), row.names = FALSE)
+
+head(data_raw)
+```
+## Importing data
+```{r}
+data_raw <- read.csv(path_data, sep = ",")
+
+head(data_raw)
+```
+
+## Normalising data
+```{r}
+data_normalised = data_raw %>%
+  
+  mutate(experiment = unlist(str_extract_all(data_raw$experiment, "\\d{8}"))) %>%
+  filter(RO3306 %in% c(0, 0.5, 1, 2, 4, 8),
+         C604 %in% c(0, 0.125, 0.25, 0.5, 1, 2)) %>%
+  reframe(nuclei_count = n(),
+          nuclei_area = sum(area_nucleus),
+          DAPI_total = sum(integrated_int_DAPI),
+          EdU_mean = mean(intensity_mean_EdU_nucleus) / mean(intensity_mean_EdU_cyto),
+          p21_mean = mean(intensity_mean_p21_nucleus),
+          .by = c(experiment, plate_id, well, well_id, image_id, cell_line, condition, C604, RO3306, cyto_id, area_cell)) %>%
+  
+  group_by(experiment, cell_line) %>%
+  group_split() %>%
+  lapply(fun_normalise, values = c("EdU_mean", "p21_mean"), ref = c("0_0")) %>%
+  bind_rows() %>%
+  mutate(EdU = case_when(EdU_mean_norm <= filter(data_thresholds, feature == "EdU")$T1 ~ "negative",
+                         EdU_mean_norm > filter(data_thresholds, feature == "EdU")$T1 ~ "positive"),
+         p21 = case_when(p21_mean_norm <= filter(data_thresholds, feature == "p21")$T1 ~ "negative",
+                         p21_mean_norm > filter(data_thresholds, feature == "p21")$T1 ~ "positive")) %>%
+  group_by(experiment, cell_line) %>%
+  group_split() %>%
+  lapply(fun_normalise, values = c("DAPI_total", "area_cell", "nuclei_area"), ref = c("0_0")) %>%
+  bind_rows() %>%
+  
+  mutate(Hoechst = case_when(DAPI_total_norm <= filter(data_thresholds, feature == "Hoechst")$T1 ~ "Debris",
+                             DAPI_total_norm <= filter(data_thresholds, feature == "Hoechst")$T2 ~ "2N",
+                             DAPI_total_norm <= filter(data_thresholds, feature == "Hoechst")$T3 ~ "4N",
+                             DAPI_total_norm > filter(data_thresholds, feature == "Hoechst")$T3 ~ "8N+")) %>%
+  
+  mutate(cell_cycle = case_when(Hoechst == "Debris" ~ "Debris",
+                                Hoechst == "2N" & EdU == "negative" ~ "2N",
+                                Hoechst == "4N" & EdU == "negative" ~ "4N",
+                                Hoechst == "2N" & EdU == "positive" ~ "S",
+                                Hoechst == "4N" & EdU == "positive" ~ "S",
+                                Hoechst == "8N+" ~ "8N+",
+                                .default = "Unassigned"))
+
+head(data_normalised)
+```
+
+## Establishing proportions of cell cycle groups
+```{r}
+data_cell_cycle_proportions <- data_normalised %>%
+  filter(cell_cycle != "Debris") %>%
+  reframe(count = n(), .by = c(experiment, cell_line, C604, RO3306, cell_cycle)) %>%
+  group_by(experiment, cell_line, C604, RO3306) %>%
+  mutate(prop = 100 * count / sum(count),
+         C604 = as.numeric(C604),
+         RO3306 = as.numeric(RO3306)) %>%
+  ungroup() %>%
+  dplyr::select(-count) %>%
+  spread(key = cell_cycle, value = prop) %>%
+  replace(is.na(.), 0) %>%
+  gather(key = cell_cycle, value = prop, 5:8)
+
+head(data_cell_cycle_proportions)
+```
+
+## Establishing proportions of p21-positive cells
+```{r}
+data_p21_proportions <- data_normalised %>%
+  filter(!(cell_cycle %in% c("Debris", "S"))) %>%
+  reframe(count = n(), .by = c(experiment, cell_line, C604, RO3306, p21)) %>%
+  group_by(experiment, cell_line, C604, RO3306) %>%
+  mutate(prop = 100 * count / sum(count),
+         C604 = as.numeric(C604),
+         RO3306 = as.numeric(RO3306)) %>%
+  ungroup() %>%
+  dplyr::select(-count) %>%
+  spread(key = p21, value = prop) %>%
+  replace(is.na(.), 0) %>%
+  gather(key = p21, value = prop, 5:6)
+
+data_p21_proportions
+```
+
+## Establishing proportions of multinucleated cells
+```{r}
+data_multinucleated_proportions <- data_normalised %>%
+  filter(cell_cycle != "Debris") %>%
+  mutate(nuclei = case_when(nuclei_count == 1 ~ "1",
+                            nuclei_count == 2 ~ "2",
+                            nuclei_count > 2 ~ "3+")) %>%
+  reframe(count = n(), .by = c(experiment, cell_line, C604, RO3306, nuclei)) %>%
+  group_by(experiment, cell_line, C604, RO3306) %>%
+  mutate(prop = 100 * count / sum(count),
+         C604 = as.numeric(C604),
+         RO3306 = as.numeric(RO3306)) %>%
+  ungroup() %>%
+  dplyr::select(-count) %>%
+  spread(key = nuclei, value = prop) %>%
+  replace(is.na(.), 0) %>%
+  gather(key = nuclei, value = prop, 5:7)
+
+data_multinucleated_proportions
+```
+
+## Establishing cell counts
+```{r}
+data_cell_counts <- data_normalised %>%
+  filter(cell_cycle != "Debris") %>%
+  reframe(count = n(), .by = c(experiment, cell_line, C604, RO3306)) %>%
+  complete(experiment, cell_line, C604, RO3306) %>%
+  replace(is.na(.), 0) %>%
+  group_by(experiment, cell_line) %>%
+  mutate(count_norm = count / max(count) * 100,
+         cytostatic_effect = 100 - count_norm) %>%
+  ungroup()
+
+head(data_cell_counts)
+```
+
+## Establishing synergy based on cell counts
+```{r}
+data_synergy <- data_cell_counts %>%
+  group_by(experiment, cell_line) %>%
+  group_split() %>%
+  lapply((function (data) {
+    
+    tmp.data <- data %>%
+      mutate(S_Bliss = NA, S_HSA = NA)
+    
+    for (c in unique(data$C604)) {
+      for (r in unique(data$RO3306)) {
+        
+        drug.a <- filter(data, C604 == c, RO3306 == 0)$cytostatic_effect / 100
+        drug.b <- filter(data, C604 == 0, RO3306 == r)$cytostatic_effect / 100
+        drug.ab <- filter(data, C604 == c, RO3306 == r)$cytostatic_effect / 100
+
+        Bliss <- drug.ab - (1 - (1 - drug.a) * (1 - (drug.b)))
+        HSA <- drug.ab - max(c(drug.a, drug.b))
+        
+        tmp.data <- tmp.data %>%
+          mutate(S_Bliss = case_when((C604 == c & RO3306 == r) ~ Bliss, .default = S_Bliss),
+                 S_HSA = case_when((C604 == c & RO3306 == r) ~ HSA, .default = S_HSA))
+      }
+    }
+    return(tmp.data)
+  })) %>%
+  bind_rows()
+
+data_synergy
+```
+
+## Establishing Euclidean distances of cell cycle profiles
+```{r}
+data_euclidean_distance <- data_cell_cycle_proportions %>%
+  filter(RO3306 == 0, C604 != 0.125) %>%
+  dplyr::select(experiment, cell_line, treatment = C604, cell_cycle, prop) %>%
+  spread(key = cell_cycle, value = prop) %>%
+  group_by(experiment, cell_line) %>%
+  group_split() %>%
+  lapply((function (data) {
+    
+    euc_dist <- function(x1, x2){
+      return(sqrt(sum((x1 - x2)^2)))
+      }
+    
+    tmp.output <- data.frame()
+    
+    for (t in unique(data$treatment)) {
+      
+      tmp.data <- filter(data, treatment %in% c(0, t))
+      
+      if (t == 0) {
+        tmp.data <- bind_rows(tmp.data, tmp.data)
+      }
+      
+      
+      tmp.euclidean <- dist(tmp.data[c("2N", "4N", "8N+", "S")], method = "euclidean")[[1]]
+      tmp.results <- data.frame(experiment = unique(tmp.data$experiment),
+                                cell_line = unique(tmp.data$cell_line),
+                                treatment = t,
+                                dist = tmp.euclidean)
+      
+      tmp.output <- bind_rows(tmp.output, tmp.results)
+
+    }
+    return(tmp.output)
+  })) %>%
+  bind_rows()
+```
+
+## Establishing AUC values of Euclidean distance profiles
+```{r}
+drm.func <- function (x) {
+  drm(dist ~ treatment, 
+      fct = LL.4(),
+      data = x,
+      robust = "median"
+      )
+}
+
+coefs.fun <- function (x) {coef(x) %>% tidy}
+graphs.fun <- function (x) {plot(x)[1:2]}
+
+data_distance_models <- data_euclidean_distance  %>%
+  group_by(cell_line, experiment) %>%
+  nest() %>%
+  mutate(dr_model = map(data, drm.func),
+         coefs = map(dr_model, coefs.fun),
+         graphs = map(dr_model, graphs.fun))
+
+data_distance_models_graphs <- data_distance_models %>%
+  group_by(cell_line, experiment) %>%
+  group_split() %>%
+  lapply((function(data) {
+    
+    tmp.cell.line <- data$cell_line
+    tmp.experiment <- data$experiment
+    tmp.model <- data[[1, "graphs"]][[1]] %>%
+      mutate(experiment = tmp.experiment, cell_line = tmp.cell.line) %>%
+      dplyr::select(experiment, cell_line, treatment, dist = "1")
+    
+    return(tmp.model)
+
+  })) %>%
+  bind_rows()
+
+data_distance_models_graphs_summary <- data_distance_models_graphs %>%
+  reframe(dist_mean = mean(dist), dist_sd = sd(dist), .by = c(cell_line, treatment))
+
+data_auc <- data_distance_models_graphs %>%
+  group_by(experiment, cell_line) %>%
+  group_split() %>%
+  lapply((function (data) {
+    
+    tmp.auc <- trapz(data$treatment, data$dist)
+    tmp.results <- data.frame(experiment = unique(data$experiment),
+                              cell_line = unique(data$cell_line),
+                              auc = tmp.auc)
+    return(tmp.results)
+    
+  })) %>%
+  bind_rows()
+
+data_auc_summary <- data_auc %>%
+  reframe(auc_mean = mean(auc), auc_sd = sd(auc), .by = c(cell_line))
+```
+
+## Plotting heatmaps of cell counts
+```{r}
+list_cell_lines <- c("HCC1395", "U2OS", "RPE-1", "MM231", "HeLa", "BT-549")
+
+data_graph <- data_cell_counts %>%
+  filter(cell_line %in% list_cell_lines, RO3306 %in% c(0, 0.5, 1, 2, 4, 8)) %>%
+  mutate(cell_line = factor(cell_line, levels = list_cell_lines)) %>%
+  arrange(C604, experiment) %>%
+  group_by(cell_line, RO3306) %>%
+  mutate(x_axis = 1:n()) %>%
+  ungroup()
+
+graph_cell_count_heatmap <- ggplot(data = data_graph, aes(x = x_axis, y = RO3306, fill = count_norm)) +
+  geom_tile(colour = colour_pallette[1], linewidth = 0.25) +
+  
+  scale_fill_gradient2(low = "#FFFFFF", mid = colour_pallette[4], high = colour_pallette[2],
+                       midpoint = 50, limits = c(0, 100), breaks = c(0, 20, 40, 60, 80, 100),
+                       na.value = colour_pallette[1]) +
+  
+  geom_vline(xintercept = seq(from = 3.5, to = 15.5, by = 3), colour = colour_pallette[6], linewidth = 0.25) +
+  
+  facet_grid(cell_line ~ .) +
+  labs(x = "C-604 (µM)", y = "RO-3306 (µM)", fill = "Cell count (normalised)") +
+  scale_x_continuous(expand = c(0, 0), breaks = seq(from = 2, to = 18, by = 3), labels = c(0, 0.13, 0.25, 0.5, 1, 2)) +
+  scale_y_discrete(expand = c(0, 0)) +
+  graph_theme +
+  theme(legend.position = "top",
+        legend.justification = "center",
+        legend.key.width = unit(12, 'pt'),
+        legend.key.height = unit(4.5, 'pt'),
+        legend.text = element_text(colour = "#000000", size = 6, margin = margin(t = 2)),
+        legend.margin = margin(b = -10),
+        legend.spacing.x = unit(1, "pt"),
+        legend.title = element_text(colour = "#000000", size = 6, hjust = 0.5)) +
+    
+  guides(fill = guide_colorbar(label.position = "bottom",
+                               frame.colour = "#000000",
+                               frame.linewidth = 0.3,
+                               ticks.colour = "#000000",
+                               title.position = "top"))
+
+ggsave(paste(path_results, "graph_heatmap_cell_count.pdf", sep = ""), graph_cell_count_heatmap,
+       width = 40, height = 85, units = "mm", device = cairo_pdf)
+```
+
+## Plotting heatmaps of synergy values
+```{r}
+list_cell_lines <- c("HCC1395", "U2OS", "RPE-1", "MM231", "HeLa", "BT-549")
+
+data_graph <- data_synergy %>%
+  filter(cell_line %in% list_cell_lines, RO3306 %in% c(0, 0.5, 1, 2, 4, 8)) %>%
+  mutate(cell_line = factor(cell_line, levels = list_cell_lines),
+         C604 = factor(C604, levels = c(0, 0.125, 0.25, 0.5, 1, 2))) %>%
+  arrange(C604, experiment) %>%
+  group_by(cell_line, RO3306) %>%
+  mutate(x_axis = 1:n()) %>%
+  ungroup()
+
+graph_synergy_heatmap <- ggplot(data = data_graph, aes(x = x_axis, y = RO3306, fill = S_HSA)) +
+  
+  geom_tile(colour = colour_pallette[1], linewidth = 0.25) +
+  
+  scale_fill_gradient2(low = colour_pallette[3], mid = "#FFFFFF", high = colour_pallette[2],
+                       midpoint = 0, limits = c(-0.5, 0.5), breaks = c(-0.5, -0.25, 0, 0.25, 0.5),
+                       labels = c("-0.5", "-0.25", "0", "0.25", "0.5"), na.value = colour_pallette[1], oob = oob_squish) +
+  
+  scale_colour_manual(values = c(colour_pallette[1], colour_pallette[2])) +
+  
+  scale_size_continuous(range = c(0.1, 1.5), breaks = c(0, 0.1, 0.2, 0.3), labels = c("0", "0.1", "0.2", "0.3")) +
+  
+  geom_vline(xintercept = seq(from = 0.5, to = 18.5, by = 3), colour = colour_pallette[6], linewidth = 0.25) +
+  geom_segment(data = data_graph, aes(x = 0.5, xend = 18.5, y = 0.5, yend = 0.5), linewidth = 0.25, lineend = "square", colour = colour_pallette[6]) +
+  geom_segment(data = data_graph, aes(x = 0.5, xend = 18.5, y = 6.5, yend = 6.5), linewidth = 0.25, lineend = "square", colour = colour_pallette[6]) +
+  
+  facet_grid(cell_line ~ .) +
+  labs(x = "C-604 (µM)", y = "RO-3306 (µM)", fill = "HSA synergy") +
+  scale_x_continuous(expand = c(0, 0), breaks = seq(from = 2, to = 18, by = 3), labels = c(0, 0.13, 0.25, 0.5, 1, 2)) +
+  scale_y_discrete(expand = c(0, 0)) +
+  graph_theme +
+  theme(legend.position = "top",
+        legend.justification = "center",
+        legend.key.width = unit(12, 'pt'),
+        legend.key.height = unit(4.5, 'pt'),
+        legend.text = element_text(colour = "#000000", size = 6, margin = margin(t = 2)),
+        legend.margin = margin(b = -10),
+        legend.spacing.x = unit(1, "pt"),
+        legend.title = element_text(colour = "#000000", size = 6, hjust = 0.5)) +
+    
+  guides(fill = guide_colorbar(label.position = "bottom",
+                               frame.colour = "#000000",
+                               frame.linewidth = 0.3,
+                               ticks.colour = "#000000",
+                               title.position = "top"))
+
+ggsave(paste(path_results, "graph_synergy_heatmap.pdf", sep = ""), graph_synergy_heatmap,
+       width = 40, height = 85, units = "mm", device = cairo_pdf)
+```
+
+## Plotting heatmaps of cell cycle proportions
+```{r}
+list_cell_lines <- c("HCC1395", "U2OS", "RPE-1", "MM231", "HeLa", "BT-549")
+
+data_graph <- data_cell_cycle_proportions %>%
+  filter(cell_line %in% list_cell_lines, RO3306 %in% c(0, 0.5, 1, 2, 4, 8),
+         cell_cycle %in% c("4N", "8N+")) %>%
+  reframe(prop = sum(prop), .by = c(experiment, cell_line, C604, RO3306)) %>%
+  mutate(cell_line = factor(cell_line, levels = list_cell_lines),
+         RO3306 = factor(RO3306, levels = c(0, 0.5, 1, 2, 4, 8))) %>%
+  arrange(C604, experiment) %>%
+  group_by(cell_line, RO3306) %>%
+  mutate(x_axis = 1:n()) %>%
+  ungroup()
+
+graph_cell_cycle_heatmap <- ggplot(data = data_graph, aes(x = x_axis, y = RO3306, fill = prop)) +
+  geom_tile(colour = colour_pallette[1], linewidth = 0.25) +
+  
+  scale_fill_gradient2(low = "#FFFFFF", mid = colour_pallette[7], high = colour_pallette[5],
+                       midpoint = 50, limits = c(0, 100), breaks = c(0, 20, 40, 60, 80, 100),
+                       na.value = colour_pallette[1]) +
+  
+  geom_vline(xintercept = seq(from = 3.5, to = 15.5, by = 3), colour = colour_pallette[6], linewidth = 0.25) +
+  
+  facet_grid(cell_line ~ .) +
+  labs(x = "C-604 (µM)", y = "RO-3306 (µM)", fill = "Proportion of 4N and 8N+ cells (%)") +
+  scale_x_continuous(expand = c(0, 0), breaks = seq(from = 2, to = 18, by = 3), labels = c(0, 0.13, 0.25, 0.5, 1, 2)) +
+  scale_y_discrete(expand = c(0, 0)) +
+  graph_theme +
+  theme(legend.position = "top",
+        legend.justification = "center",
+        legend.key.width = unit(12, 'pt'),
+        legend.key.height = unit(4.5, 'pt'),
+        legend.text = element_text(colour = "#000000", size = 6, margin = margin(t = 2)),
+        legend.margin = margin(b = -10),
+        legend.spacing.x = unit(1, "pt"),
+        legend.title = element_text(colour = "#000000", size = 6, hjust = 0.5)) +
+    
+  guides(fill = guide_colorbar(label.position = "bottom",
+                               frame.colour = "#000000",
+                               frame.linewidth = 0.3,
+                               ticks.colour = "#000000",
+                               title.position = "top"))
+
+ggsave(paste(path_results, "graph_cell_cycle_heatmap.pdf", sep = ""), graph_cell_cycle_heatmap,
+       width = 40, height = 85, units = "mm", device = cairo_pdf)
+```
+
+## Combining heatmaps
+```{r warning=FALSE}
+graph_heatmaps <- plot_grid(graph_cell_count_heatmap,
+                            graph_synergy_heatmap,
+                            nrow = 1, ncol = 2,
+                            align = "h", axis = "tb",
+                            rel_widths = c(1, 1))
+
+ggsave(paste(path_results, "graph_heatmaps.pdf", sep = ""), graph_heatmaps,
+       width = 85, height = 90, units = "mm", device = cairo_pdf)
+```
+
+
+## Plotting proportions of 2N, S, 4N and 8N+ cell cycle groups in populations treated with C-604 only
+```{r}
+list_cell_lines <- c("HCC1395", "U2OS", "RPE-1", "MM231", "HeLa", "BT-549")
+
+data_graph <- data_cell_cycle_proportions %>%
+  complete(experiment, cell_line, C604, RO3306, cell_cycle) %>%
+  
+  filter((RO3306 == 0 |
+            (cell_line == "HCC1395" & RO3306 == 1) |
+            (cell_line == "U2OS" & RO3306 == 4) |
+            (cell_line == "RPE-1" & RO3306  == 1) |
+            (cell_line == "MM231" & RO3306  == 2) |
+            (cell_line == "HeLa" & RO3306  == 2) |
+            (cell_line == "BT-549" & RO3306  == 1))) %>%
+  
+  complete(cell_line, C604, cell_cycle) %>%
+  replace(is.na(.), 0) %>%
+  mutate(treatment = ifelse(RO3306 == 0, "Control", "RO-3306")) %>%
+  arrange(treatment, C604, experiment, cell_cycle) %>%
+  group_by(treatment, cell_line, cell_cycle) %>%
+  mutate(x_axis = 1:n()) %>%
+  ungroup() %>%
+  mutate(cell_cycle = factor(cell_cycle, levels = c("2N", "S", "4N", "8N+")),
+         cell_line = factor(cell_line, levels = list_cell_lines))
+
+data_stats <- data.frame()
+
+for (l in unique(data_graph$cell_line)) {
+  for (c in unique(data_graph$cell_cycle)) {
+    for (g in unique(data_graph$C604)) {
+    
+      tmp.data <- filter(data_graph,
+                        cell_line == l,
+                        cell_cycle == c,
+                        C604 == g) %>%
+      
+        dplyr::select(experiment, cell_line, treatment, cell_cycle, prop) %>%
+        spread(key = treatment, value = prop) %>%
+        replace(is.na(.), 0)
+    
+      tmp.stats <- t.test(tmp.data[[5]], tmp.data[[4]],
+                          alternative = "two.sided",
+                          paired = FALSE,
+                          var.equal = TRUE)
+    
+      tmp.results <- data.frame(cell_line = l,
+                                cell_cycle = c,
+                                C604 = g,
+                                p = tmp.stats$p.value)
+      
+      data_stats <- bind_rows(data_stats, tmp.results)
+    }
+  }
+}
+
+data_stats <- data_stats %>%
+  mutate(significance = case_when(p < 0.0001 ~ "****",
+                                  p < 0.001 ~ "***",
+                                  p < 0.01 ~ "**",
+                                  p < 0.05 ~ "*",
+                                  .default = "ns"))
+
+data_stats_subset <- data_stats %>%
+  filter(cell_cycle %in% c("4N", "8N+")) %>%
+  group_by(cell_line, C604) %>%
+  group_split() %>%
+  lapply((function (data) {
+    if(sum(data$significance == "ns") == 2) {
+      return(head(data, 1))
+    } else {
+      return(filter(data, significance != "ns"))
+    }
+  })) %>%
+  bind_rows() %>%
+  mutate(cell_line = factor(cell_line, levels = list_cell_lines))
+
+graph_cell_cycle_proportions <- ggplot() +
+  
+  geom_bar(data = data_graph,
+           aes(x = x_axis,
+               y = prop,
+               fill = cell_cycle,
+               group = interaction(C604, cell_cycle)),
+           stat = "identity", position = "stack",
+           width = 0.95, alpha = 1) +
+  
+  geom_segment(data = data_graph, aes(x = 0.6, xend = 0.6, y = 0, yend = 100),
+               colour = colour_pallette[6], linetype = "solid", linewidth = 0.25) +
+  
+  geom_segment(data = data_graph, aes(x = 3.5, xend = 3.5, y = 0, yend = 100),
+               colour = colour_pallette[6], linetype = "solid", linewidth = 0.25) +
+  
+  geom_segment(data = data_graph, aes(x = 6.5, xend = 6.5, y = 0, yend = 100),
+               colour = colour_pallette[6], linetype = "solid", linewidth = 0.25) +
+  
+  geom_segment(data = data_graph, aes(x = 9.4, xend = 9.4, y = 0, yend = 100),
+               colour = colour_pallette[6], linetype = "solid", linewidth = 0.25) +
+  
+  geom_segment(data = data_graph, aes(x = 12.4, xend = 12.4, y = 0, yend = 100),
+               colour = colour_pallette[6], linetype = "solid", linewidth = 0.25) +
+  
+  geom_segment(data = data_graph, aes(x = 15.4, xend = 15.4, y = 0, yend = 100),
+               colour = colour_pallette[6], linetype = "solid", linewidth = 0.25) +
+  
+  geom_segment(data = data_graph, aes(x = 18.4, xend = 18.4, y = 0, yend = 100),
+               colour = colour_pallette[6], linetype = "solid", linewidth = 0.25) +
+
+  geom_hline(yintercept = c(0, 100), colour = colour_pallette[6], linetype = "solid", linewidth = 0.25) +
+  
+  facet_nested(treatment ~ cell_line,
+               nest_line = element_line(linetype = 1, linewidth = 0.25),
+               resect = unit(0.04, "in"),
+               strip = strip_nested(clip = "off")) +
+  
+  labs(x = "GWL inhibitor C-604 (µM)", y = "Proportion (%)") +
+  
+  scale_fill_manual(values = c(colour_pallette[2], colour_pallette[3], colour_pallette[4], colour_pallette[5])) +
+  scale_x_continuous(expand = c(0, 0), breaks = c(2, 5, 8, 11, 14, 17), labels = c(0, 0.125, 0.25, 0.5, 1, 2)) +
+  scale_y_continuous(expand = c(0, 0), limits = c(-1.5, 101), breaks = c(10, 30, 50, 70, 90)) +
+  graph_theme +
+  theme(panel.border = element_blank(),
+        axis.text.x = element_text(colour = "#000000", size = 6, margin = margin(t = 2), angle = -45, hjust = 0, vjust = 1),
+        legend.position = "bottom",
+        legend.justification = "left",
+        legend.key.width = unit(5, 'pt'),
+        legend.key.height = unit(4, 'pt'),
+        legend.text = element_text(colour = "#000000", size = 6, margin = margin()),
+        legend.margin = margin(t = -15, l = -2),
+        legend.title = element_blank())
+  
+ggsave(paste(path_results, "graph_cell_cycle_proportions.pdf", sep = ""), graph_cell_cycle_proportions,
+       width = 174, height = 35, units = "mm", device = cairo_pdf)
+```
+
+## Establishing spatial densities of data points in EdU ~ Hoechst scatterplots
+```{r}
+data_normalised_subset_random <- data_normalised %>%
+  filter(RO3306 == 0) %>%
+  rename(treatment = C604) %>%
+  
+  group_by(experiment, cell_line, treatment) %>%
+  group_split() %>%
+  lapply((function (data, n = 2000) {
+    if (nrow(data) > n) {
+      data <- sample_n(data, n)
+      return(data)
+    } else {
+        return(data)
+      }
+  })) %>%
+  bind_rows() %>%
+  group_by(cell_line) %>%
+  mutate(density_DAPI_EdU = get_density(log2(DAPI_total_norm), log2(EdU_mean_norm), n = 150, h = c(0.5, 0.5))) %>%
+  ungroup()
+```
+
+## Plotting EdU ~ Hoechst scatterplots and marginal histograms of Hoechst intensities
+```{r}
+list_cell_lines = c("HCC1395", "U2OS", "RPE-1", "MM231", "HeLa", "BT-549")
+
+data_graph <- data_normalised_subset_random %>%
+  filter(cell_line %in% list_cell_lines) %>%
+  mutate(cell_cycle = factor(cell_cycle, levels = c("Debris", "2N", "S", "4N", "8N+")),
+         cell_line = factor(cell_line, levels = list_cell_lines))
+
+graph_marginal_Hoechst <- ggplot(data = filter(data_graph, cell_line %in% list_cell_lines),
+                                 aes(x = DAPI_total_norm, y = factor(treatment))) +
+  
+  stat_binline(linewidth = 0.25, bins = 50, colour = "#000000", fill = colour_pallette[5], alpha = 0.5) +
+  scale_x_continuous(trans = "log2", limits = c(1.3, 35), breaks = c(2, 4, 8, 16, 32)) +
+  scale_y_discrete(limits = rev) +
+  facet_nested(. ~ cell_line,
+               nest_line = element_line(linetype = 1),
+               resect = unit(0.04, "in"),
+               strip = strip_nested(clip = "off")) +
+  graph_theme +
+  theme(
+    strip.text.x = element_text(colour = "#000000", size = 6, margin = margin(b = 2, t = 2)),
+    strip.text.y = element_blank(),
+    axis.text.y = element_text(colour = "#000000", size = 6, margin = margin(r = 2), hjust = 1, vjust = 0),
+    panel.spacing.y = unit(0.075, "lines"),
+    panel.spacing.x = unit(0.075, "lines"),
+    panel.border = element_blank(),
+    plot.margin = margin(b = 0.1, l = 0.1, t = 0.1, r = 0.1, unit = "lines"),
+    axis.title.y = element_blank(),
+    axis.ticks.x = element_blank(),
+    axis.title.x = element_blank(),
+    axis.text.x = element_blank())
+
+graph_cell_cycle_scatter <- ggplot() +
+  
+  geom_vline(xintercept = filter(data_thresholds, feature == "Hoechst")$T1, linewidth = 0.3, linetype = "dashed", colour = "#000000") +
+  geom_vline(xintercept = filter(data_thresholds, feature == "Hoechst")$T2, linewidth = 0.3, linetype = "dashed", colour = "#000000") +
+  geom_vline(xintercept = filter(data_thresholds, feature == "Hoechst")$T3, linewidth = 0.3, linetype = "dashed", colour = "#000000") +
+  geom_hline(yintercept = filter(data_thresholds, feature == "EdU")$T1, linewidth = 0.3, linetype = "dashed", colour = "#000000") +
+  
+  geom_point(data = data_graph,
+             aes(x = DAPI_total_norm, y = EdU_mean_norm, colour = cell_cycle, fill = cell_cycle, alpha = density_DAPI_EdU),
+             size = 0.75, stroke = 0.1, shape = 16) +
+  
+  scale_colour_manual(values = c(colour_pallette[1], colour_pallette[2], colour_pallette[3], colour_pallette[4], colour_pallette[5], colour_pallette[6])) +
+  
+  scale_x_continuous(trans = "log2", limits = c(1.3, 35), breaks = c(2, 4, 8, 16, 32)) +
+  scale_y_continuous(trans = "log2", limits = c(0.9, 24), breaks = c(1, 2, 4, 8, 16)) +
+  labs(x = "Hoechst (normalised)", y = "EdU (normalised)") +
+  scale_alpha_continuous(range = c(0.1, 1)) +
+  facet_nested(treatment ~ cell_line, strip = strip_nested(clip = "off")) +
+  graph_theme +
+  theme(
+    axis.text.x = element_text(colour = "#000000", size = 6, angle = -90, hjust = 0, vjust = 0.5, margin = margin(t = 2), family = "Arial"),
+    axis.text.y = element_text(colour = "#000000", size = 6, margin = margin(r = 0), family = "Arial"),
+    axis.title.x = element_text(colour = "#000000", size = 6, margin = margin(t = 2), family = "Arial"),
+    axis.title.y = element_text(colour = "#000000", size = 6, margin = margin(r = 2), family = "Arial"),
+    strip.text.y = element_text(colour = "#000000", size = 6, margin = margin(l = 2), vjust = 0, family = "Arial"),
+    panel.spacing.y = unit(0.075, "lines"),
+    panel.spacing.x = unit(0.075, "lines"),
+    plot.margin = margin(b = 0.1, l = 0.1, t = -0.35, r = 0.1, unit = "lines"),
+    strip.text.x = element_blank(),
+    legend.position = "none",
+    legend.justification = "center",
+    legend.direction = "vertical",
+    legend.key.width = unit(1, 'mm'),
+    legend.key.height = unit(1, 'mm'),
+    legend.text = element_text(colour = "#000000", size = 6),
+    legend.margin = margin(b = 50, r = -7),
+    legend.spacing.y = unit(1, "mm"),
+    legend.title = element_blank()) +
+  guides(alpha = FALSE,
+         color = guide_legend(override.aes = list(size = 2),
+                              nrow = 6,
+                              label.position = "left"))
+
+graph_cell_cycle <- plot_grid(graph_marginal_Hoechst,
+                              graph_cell_cycle_scatter,
+                              align = "v", axis = "lr",
+                              rel_heights = c(0.65, 2),
+                              rel_widths = c(1, 1),
+                              nrow = 2, ncol = 1)
+
+ggsave(paste(path_results, "graph_cell_cycle_scatterplot.pdf", sep = ""), graph_cell_cycle,
+       width = 80, height = 85, units = "mm", device = cairo_pdf)
+```
+
+## Plotting p21 intensity distributions
+```{r}
+list_cell_lines = c("HCC1395", "U2OS", "RPE-1", "MM231", "HeLa", "BT-549")
+
+data_graph <- data_normalised_subset_random %>%
+  filter(cell_line %in% list_cell_lines, cell_cycle != "Debris") %>%
+  mutate(cell_cycle = factor(cell_cycle, levels = c("2N", "S", "4N", "8N+")),
+         cell_line = factor(cell_line, levels = list_cell_lines),
+         dataset = "GWL inhibitor C-604 (µM)")
+
+data_graph_summary <- data_graph %>%
+  reframe(p21_median = median(p21_mean_norm), .by = c(experiment, cell_line, treatment, cell_cycle, dataset))
+
+list_treatments <- unique(data_graph$treatment)
+data_stats <- data.frame()
+
+for (l in unique(data_graph_summary$cell_line)) {
+  for (t in list_treatments[list_treatments != "0"]) {
+    for (c in unique(data_graph_summary$cell_cycle)) {
+      
+      tmp.data <- filter(data_graph_summary,
+                         cell_line == l,
+                         treatment %in% c("0", t),
+                         cell_cycle == c) %>%
+        
+        dplyr::select(dataset, experiment, cell_line, treatment, cell_cycle, p21_median) %>%
+        spread(key = treatment, value = p21_median)
+
+        tmp.stats <- t.test(tmp.data[[6]], tmp.data[[5]],
+                            alternative = "two.sided",
+                            paired = FALSE,
+                            var.equal = TRUE)
+        
+      tmp.results <- data.frame(cell_line = l,
+                                cell_cycle = c,
+                                treatment = t,
+                                p = tmp.stats$p.value)
+      
+      data_stats <- bind_rows(data_stats, tmp.results)
+    }
+  }
+}
+
+data_stats <- data_stats %>%
+  mutate(significance = case_when(p < 0.001 ~ "***",
+                                  p < 0.01 ~ "**",
+                                  p < 0.05 ~ "*",
+                                  .default = "ns"),
+         
+         cell_cycle = factor(cell_cycle, levels = c("2N", "S", "4N", "8N+")),
+         cell_line = factor(cell_line, levels = list_cell_lines),
+         dataset = "GWL inhibitor C-604 (µM)",
+         position = ifelse(cell_cycle %in% c("S", "8N+") & significance != "ns", 3.75, 3))
+
+graph_marginal_p21 <- ggplot(data = filter(data_graph, cell_line %in% list_cell_lines),
+                             aes(x = p21_mean_norm, y = factor(treatment))) +
+  
+  stat_binline(linewidth = 0.25, bins = 50, colour = "#000000", fill = colour_pallette[8], alpha = 0.5) +
+  scale_x_continuous(trans = "log2", limits = c(0.75, 4.5), breaks = c(1, 2, 4)) +
+  scale_y_discrete(limits = rev) +
+  labs(y = "C-604 (µM)") +
+  facet_nested(. ~ cell_line,
+               nest_line = element_line(linetype = 1),
+               resect = unit(0.04, "in"),
+               strip = strip_nested(clip = "off")) +
+  graph_theme +
+  theme(
+    strip.text.x = element_text(colour = "#000000", size = 6, margin = margin(b = 2, t = 2)),
+    strip.text.y = element_blank(),
+    axis.text.y = element_text(colour = "#000000", size = 6, margin = margin(r = 2), hjust = 1, vjust = 0),
+    panel.spacing.y = unit(0.075, "lines"),
+    panel.spacing.x = unit(0.075, "lines"),
+    panel.border = element_blank(),
+    plot.margin = margin(b = 0.1, l = 0.1, t = 0.1, r = 0.1, unit = "lines"),
+    axis.ticks.x = element_blank(),
+    axis.title.x = element_blank(),
+    axis.text.x = element_blank())
+
+graph_p21_points <- ggplot() +
+ 
+  geom_vline(xintercept = filter(data_thresholds, feature == "p21")$T1, linewidth = 0.3, linetype = "dashed", colour = "#000000") +
+  
+  geom_point(data = data_graph,
+             aes(x = p21_mean_norm, y = cell_cycle, colour = cell_cycle),
+             size = 0.5, stroke = 0.1, shape = 16,
+             position = position_jitter(0, 0.35),
+             alpha = 0.05) +
+  
+  geom_point(data = data_graph_summary, aes(x = p21_median, y = cell_cycle, shape = experiment, group = experiment),
+             size = 0.75, stroke = 0.25, position = position_dodge(0.35),
+             fill = "#FFFFFF", colour = colour_pallette[6]) +
+  
+  geom_text(data = filter(data_stats, significance != "ns"), 
+            aes(x = 3.6, y = cell_cycle, label = significance, colour = cell_cycle), size = 5.5/.pt,
+            angle = -90, family = "Arial") +
+  
+  geom_text(data = filter(data_stats, significance == "ns"), 
+            aes(x = 4, y = cell_cycle, label = significance), size = 5/.pt, colour = colour_pallette[1],
+            angle = -90, family = "Arial") +
+  
+  scale_shape_manual(values = c(21, 22, 24)) +
+  scale_colour_manual(values = c(colour_pallette[2], colour_pallette[3], colour_pallette[4], colour_pallette[5], colour_pallette[6])) +
+  
+  scale_x_continuous(trans = "log2", limits = c(0.75, 4.5), breaks = c(1, 2, 4)) +
+  scale_y_discrete(limits = rev) +
+  labs(x = "p21 (normalised)", y = "Cell cycle phase") +
+  scale_alpha_continuous(range = c(0.1, 1)) +
+  facet_nested(dataset + treatment ~ cell_line, strip = strip_nested(clip = "off")) +
+  graph_theme +
+  theme(
+    axis.text.y = element_text(colour = "#000000", size = 6, margin = margin(r = 0), family = "Arial"),
+    axis.title.x = element_text(colour = "#000000", size = 6, margin = margin(t = 2), family = "Arial"),
+    axis.title.y = element_text(colour = "#000000", size = 6, margin = margin(r = 2), family = "Arial"),
+    strip.text.y = element_text(colour = "#000000", size = 6, margin = margin(l = 2), vjust = 0, family = "Arial"),
+    panel.spacing.y = unit(0.075, "lines"),
+    panel.spacing.x = unit(0.075, "lines"),
+    plot.margin = margin(b = 0.1, l = 0.1, t = -0.35, r = 0.1, unit = "lines"),
+    strip.text.x = element_blank(),
+    legend.position = "none",
+    legend.justification = "center",
+    legend.direction = "vertical",
+    legend.key.width = unit(1, 'mm'),
+    legend.key.height = unit(1, 'mm'),
+    legend.text = element_text(colour = "#000000", size = 6),
+    legend.margin = margin(b = 50, r = -7),
+    legend.spacing.y = unit(1, "mm"),
+    legend.title = element_blank()) +
+  guides(alpha = FALSE,
+         color = guide_legend(override.aes = list(size = 2),
+                              nrow = 6,
+                              label.position = "left"))
+
+graph_p21 <- plot_grid(graph_marginal_p21,
+                       graph_p21_points,
+                       align = "v", axis = "lr",
+                       rel_heights = c(0.65, 2),
+                       rel_widths = c(1, 1),
+                       nrow = 2, ncol = 1)
+
+ggsave(paste(path_results, "graph_p21_points_distributions.pdf", sep = ""), graph_p21,
+       width = 75, height = 85, units = "mm", device = cairo_pdf)
+```
+
+## Plotting Hoechst distrubution
+```{r}
+list_cell_lines = c("HCC1395", "U2OS", "RPE-1", "MM231", "HeLa", "BT-549")
+
+data_graph <- data_normalised %>%
+  filter(RO3306 == 0, C604 %in% c(0, 2)) %>%
+  rename(treatment = C604) %>%
+  group_by(experiment, cell_line, treatment) %>%
+  group_split() %>%
+  lapply((function (data, n = 1000) {
+    if (nrow(data) > n) {
+      data <- sample_n(data, n)
+      return(data)
+    } else {
+        return(data)
+      }
+  })) %>%
+  bind_rows() %>%
+  mutate(cell_cycle = factor(cell_cycle, levels = c("Debris", "2N", "S", "4N", "8N+")))
+
+graph_Hoechst_dist <- ggplot(data = data_graph , aes(x = DAPI_total_norm, y = ..density..)) +
+  geom_density(colour = colour_pallette[5], fill = colour_pallette[3], linewidth = 0.35) +
+  geom_vline(xintercept = filter(data_thresholds, feature == "Hoechst")$T1, linewidth = 0.35, linetype = "dashed", colour = "#000000") +
+  geom_vline(xintercept = filter(data_thresholds, feature == "Hoechst")$T2, linewidth = 0.35, linetype = "dashed", colour = "#000000") +
+  geom_vline(xintercept = filter(data_thresholds, feature == "Hoechst")$T3, linewidth = 0.35, linetype = "dashed", colour = "#000000") +
+  scale_x_continuous(trans = "log2", expand = c(0, 0), limits = c(1.2, 24), breaks = c(1, 2, 4, 8, 16)) +
+  scale_y_continuous(expand = c(0, 0), limits = c(0, 1)) +
+  labs(x = "Hoechst (norm)", y = "Density") +
+  
+  graph_theme +
+  theme(
+    strip.text.y = element_blank(),
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    plot.margin = margin(b = 0.1, l = 0.1, t = 0.1, r = 0.25, unit = "lines"))
+
+ggsave(paste(path_results, "graph_histogram_Hoechst.pdf", sep = ""), graph_Hoechst_dist,
+       width = 17.5, height = 17.5, units = "mm", device = cairo_pdf)
+```
+
+## Plotting p21 distribution
+```{r}
+data_graph <- data_normalised %>%
+  filter(RO3306 == 0, C604 %in% c(0, 2)) %>%
+  rename(treatment = C604) %>%
+  group_by(experiment, cell_line, treatment) %>%
+  group_split() %>%
+  lapply((function (data, n = 1000) {
+    if (nrow(data) > n) {
+      data <- sample_n(data, n)
+      return(data)
+    } else {
+        return(data)
+      }
+  })) %>%
+  bind_rows()
+
+graph_p21_dist <- ggplot(data = data_graph , aes(x = p21_mean_norm, y = ..density..)) +
+  geom_density(colour = colour_pallette[8], fill = colour_pallette[7], linewidth = 0.35) +
+  geom_vline(xintercept = filter(data_thresholds, feature == "p21")$T1, linewidth = 0.35, linetype = "dashed", colour = "#000000") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0.8, 2.2), breaks = c(1, 1.5, 2)) +
+  scale_y_continuous(expand = c(0, 0), limits = c(0, 4.5)) +
+  labs(x = "p21 (norm)", y = "Density") +
+  
+  graph_theme +
+  theme(
+    strip.text.y = element_blank(),
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    plot.margin = margin(b = 0.1, l = 0.1, t = 0.1, r = 0.25, unit = "lines"))
+
+ggsave(paste(path_results, "graph_histogram_p21.pdf", sep = ""), graph_p21_dist,
+       width = 17.5, height = 17.5, units = "mm", device = cairo_pdf)
+```
+
+## Plotting EdU distribution
+```{r}
+data_graph <- data_normalised %>%
+  filter(RO3306 == 0, C604 %in% c(0, 2)) %>%
+  rename(treatment = C604) %>%
+  group_by(experiment, cell_line, treatment) %>%
+  group_split() %>%
+  lapply((function (data, n = 1000) {
+    if (nrow(data) > n) {
+      data <- sample_n(data, n)
+      return(data)
+    } else {
+        return(data)
+      }
+  })) %>%
+  bind_rows()
+
+graph_EdU_dist <- ggplot(data = data_graph , aes(x = EdU_mean_norm, y = ..density..)) +
+  geom_density(colour = colour_pallette[2], fill = colour_pallette[4], linewidth = 0.35) +
+  #geom_histogram(bins = 100, colour = colour_pallette[2], fill = colour_pallette[2]) +
+  geom_vline(xintercept = filter(data_thresholds, feature == "EdU")$T1, linewidth = 0.35, linetype = "dashed", colour = "#000000") +
+  scale_x_continuous(trans = "log2", expand = c(0, 0), limits = c(0.75, 24), breaks = c(1, 2, 4, 8, 16)) +
+  scale_y_continuous(expand = c(0, 0), limits = c(0, 1.7)) +
+  labs(x = "EdU (norm)", y = "Density") +
+  
+  graph_theme +
+  theme(
+    strip.text.y = element_blank(),
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    plot.margin = margin(b = 0.1, l = 0.1, t = 0.1, r = 0.25, unit = "lines"))
+
+ggsave(paste(path_results, "graph_histogram_EdU.pdf", sep = ""), graph_EdU_dist,
+       width = 17.5, height = 17.5, units = "mm", device = cairo_pdf)
+```
+
+## Plotting proportions of 2N, S, 4N and 8N+ cell cycle groups in cells treated with C-604 only
+```{r}
+list_cell_lines <- c("HCC1395", "U2OS", "RPE-1", "MM231", "HeLa", "BT-549")
+
+data_graph <- data_cell_cycle_proportions %>%
+  filter(RO3306 == 0, C604 %in% c(0, 0.25, 0.5, 1, 2)) %>%
+  complete(experiment, cell_line, C604, RO3306, cell_cycle) %>%
+  replace(is.na(.), 0) %>%
+  rename(treatment = C604) %>%
+  arrange(treatment, experiment, cell_cycle) %>%
+  group_by(cell_line, cell_cycle) %>%
+  mutate(x_axis = 1:n()) %>%
+  ungroup() %>%
+  mutate(cell_cycle = factor(cell_cycle, levels = c("2N", "S", "4N", "8N+")),
+         cell_line = factor(cell_line, levels = list_cell_lines))
+
+data_stats <- data.frame()
+
+for (l in unique(data_graph$cell_line)) {
+  for (c in unique(data_graph$cell_cycle)) {
+    for (t in unique(data_graph$treatment)[unique(data_graph$treatment) != 0]) {
+      
+      tmp.data <- filter(data_graph,
+                         cell_line == l,
+                         cell_cycle == c,
+                         treatment %in% c(0, t)) %>%
+        
+        dplyr::select(experiment, cell_line, treatment, cell_cycle, prop) %>%
+        spread(key = treatment, value = prop) %>%
+        replace(is.na(.), 0)
+      
+      tmp.stats <- t.test(tmp.data[[5]], tmp.data[[4]],
+                          alternative = "two.sided",
+                          paired = FALSE,
+                          var.equal = TRUE)
+    
+      tmp.results <- data.frame(cell_line = l,
+                                cell_cycle = c,
+                                treatment = t,
+                                p = tmp.stats$p.value)
+      
+      data_stats <- bind_rows(data_stats, tmp.results)
+    }
+  }
+}
+
+data_stats <- data_stats %>%
+  mutate(significance = case_when(p < 0.001 ~ "***",
+                                  p < 0.01 ~ "**",
+                                  p < 0.05 ~ "*",
+                                  .default = "ns"))
+
+data_stats_subset <- data_stats %>%
+  filter(cell_cycle %in% c("4N", "8N+")) %>%
+  group_by(cell_line, treatment) %>%
+  group_split() %>%
+  lapply((function (data) {
+    if(sum(data$significance == "ns") == 2) {
+      return(head(data, 1))
+    } else {
+      return(filter(data, significance != "ns"))
+    }
+  })) %>%
+  bind_rows() %>%
+  mutate(cell_line = factor(cell_line, levels = list_cell_lines),
+         x_axis = case_when(treatment == 0.25 ~ 5,
+                            treatment == 0.5 ~ 8,
+                            treatment == 1 ~ 11,
+                            treatment == 2 ~ 14))
+
+graph_cell_cycle_proportions_C604_only <- ggplot() +
+  
+  geom_bar(data = data_graph,
+           aes(x = x_axis,
+               y = prop,
+               fill = cell_cycle,
+               group = cell_cycle),
+           stat = "identity", position = "stack",
+           width = 0.95, alpha = 1) +
+  
+  geom_text(data = filter(data_stats_subset, significance != "ns", cell_cycle == "4N"),
+            aes(x = x_axis, y = 112, label = significance), size = 6/.pt, colour = colour_pallette[4], family = "Arial") +
+  geom_text(data = filter(data_stats_subset, significance != "ns", cell_cycle == "8N+"),
+            aes(x = x_axis, y = 102, label = significance), size = 6/.pt, colour = colour_pallette[5], family = "Arial") +
+  geom_text(data = filter(data_stats_subset, significance == "ns"), 
+            aes(x = x_axis, y = 115, label = significance), size = 5.5/.pt, colour = colour_pallette[1], family = "Arial") +
+  
+  geom_segment(data = unique(dplyr::select(data_graph, cell_line)), aes(x = 0.6, xend = 0.6, y = 0, yend = 100),
+               colour = colour_pallette[6], linetype = "solid", linewidth = 0.25) +
+  
+  geom_segment(data = unique(dplyr::select(data_graph, cell_line)), aes(x = 3.5, xend = 3.5, y = 0, yend = 100),
+               colour = colour_pallette[6], linetype = "solid", linewidth = 0.25) +
+  
+  geom_segment(data = unique(dplyr::select(data_graph, cell_line)), aes(x = 6.5, xend = 6.5, y = 0, yend = 100),
+               colour = colour_pallette[6], linetype = "solid", linewidth = 0.25) +
+  
+  geom_segment(data = unique(dplyr::select(data_graph, cell_line)), aes(x = 9.4, xend = 9.4, y = 0, yend = 100),
+               colour = colour_pallette[6], linetype = "solid", linewidth = 0.25) +
+  
+  geom_segment(data = unique(dplyr::select(data_graph, cell_line)), aes(x = 12.4, xend = 12.4, y = 0, yend = 100),
+               colour = colour_pallette[6], linetype = "solid", linewidth = 0.25) +
+  
+  geom_segment(data = unique(dplyr::select(data_graph, cell_line)), aes(x = 15.4, xend = 15.4, y = 0, yend = 100),
+               colour = colour_pallette[6], linetype = "solid", linewidth = 0.25) +
+
+  geom_hline(yintercept = c(0, 100), colour = colour_pallette[6], linetype = "solid", linewidth = 0.25) +
+  
+  facet_nested(. ~ cell_line,
+               nest_line = element_line(linetype = 1, linewidth = 0.25),
+               resect = unit(0.04, "in"),
+               strip = strip_nested(clip = "off")) +
+  
+  labs(x = "GWL inhibitor C-604 (µM)", y = "%") +
+  
+  scale_fill_manual(values = c(colour_pallette[2], colour_pallette[3], colour_pallette[4], colour_pallette[5])) +
+  scale_x_continuous(expand = c(0, 0), breaks = c(2, 5, 8, 11, 14), labels = c(0, 0.25, 0.5, 1, 2)) +
+  scale_y_continuous(expand = c(0, 0), limits = c(-1.5, 125), breaks = c(0, 25, 50, 75, 100)) +
+  graph_theme +
+  theme(panel.border = element_blank(),
+        axis.text.x = element_text(colour = "#000000", size = 6, margin = margin(t = 2), angle = -90, hjust = 0, vjust = 0.5),
+        legend.position = "right",
+        legend.justification = "center",
+        legend.key.width = unit(5.5, 'pt'),
+        legend.key.height = unit(4, 'pt'),
+        legend.text = element_text(colour = "#000000", size = 6, margin = margin()),
+        legend.margin = margin(t = 4, l = -10),
+        legend.title = element_blank())
+  
+ggsave(paste(path_results, "graph_cell_cycle_proportions_C604_only.pdf", sep = ""), graph_cell_cycle_proportions_C604_only,
+       width = 95, height = 25, units = "mm", device = cairo_pdf)
+```
+
+## Plotting proportions of p21-positive in cells treated with C-604 only
+```{r}
+list_cell_lines <- c("HCC1395", "U2OS", "RPE-1", "MM231", "HeLa", "BT-549")
+
+data_graph <- data_p21_proportions %>%
+  filter(RO3306 == 0, C604 %in% c(0, 0.25, 0.5, 1, 2)) %>%
+  complete(experiment, cell_line, C604, RO3306, p21) %>%
+  replace(is.na(.), 0) %>%
+  rename(treatment = C604) %>%
+  arrange(treatment, experiment, p21) %>%
+  group_by(cell_line, p21) %>%
+  mutate(x_axis = 1:n()) %>%
+  ungroup() %>%
+  mutate(p21 = factor(p21, levels = c("negative", "positive"), labels = c("p21-", "p21+")),
+         cell_line = factor(cell_line, levels = list_cell_lines))
+
+data_stats <- data.frame()
+
+for (l in unique(data_graph$cell_line)) {
+  for (c in unique(data_graph$p21)) {
+    for (t in unique(data_graph$treatment)[unique(data_graph$treatment) != 0]) {
+      
+      tmp.data <- filter(data_graph,
+                         cell_line == l,
+                         p21 == c,
+                         treatment %in% c(0, t)) %>%
+        
+        dplyr::select(experiment, cell_line, treatment, p21, prop) %>%
+        spread(key = treatment, value = prop) %>%
+        replace(is.na(.), 0)
+      
+      tmp.stats <- t.test(tmp.data[[5]], tmp.data[[4]],
+                          alternative = "two.sided",
+                          paired = FALSE,
+                          var.equal = TRUE)
+    
+      tmp.results <- data.frame(cell_line = l,
+                                p21 = c,
+                                treatment = t,
+                                p = tmp.stats$p.value)
+      
+      data_stats <- bind_rows(data_stats, tmp.results)
+    }
+  }
+}
+
+data_stats <- data_stats %>%
+  mutate(significance = case_when(p < 0.001 ~ "***",
+                                  p < 0.01 ~ "**",
+                                  p < 0.05 ~ "*",
+                                  .default = "ns"))
+
+data_stats_subset <- data_stats %>%
+  filter(p21 %in% c("p21+")) %>%
+  group_by(cell_line, treatment) %>%
+  group_split() %>%
+  lapply((function (data) {
+    if(sum(data$significance == "ns") == 1) {
+      return(head(data, 1))
+    } else {
+      return(filter(data, significance != "ns"))
+    }
+  })) %>%
+  bind_rows() %>%
+  mutate(cell_line = factor(cell_line, levels = list_cell_lines),
+         x_axis = case_when(treatment == 0.25 ~ 5,
+                            treatment == 0.5 ~ 8,
+                            treatment == 1 ~ 11,
+                            treatment == 2 ~ 14))
+
+graph_p21_proportions_C604_only <- ggplot() +
+  
+  geom_bar(data = data_graph,
+           aes(x = x_axis,
+               y = prop,
+               fill = p21,
+               group = p21),
+           stat = "identity", position = "stack",
+           width = 0.95, alpha = 1) +
+
+  geom_text(data = filter(data_stats_subset, significance != "ns"),
+            aes(x = x_axis, y = 102, label = significance), size = 6/.pt, colour = colour_pallette[8], family = "Arial") +
+  geom_text(data = filter(data_stats_subset, significance == "ns"), 
+            aes(x = x_axis, y = 115, label = significance), size = 5.5/.pt, colour = colour_pallette[1], family = "Arial") +
+  
+  geom_segment(data = unique(dplyr::select(data_graph, cell_line)), aes(x = 0.6, xend = 0.6, y = 0, yend = 100),
+               colour = colour_pallette[6], linetype = "solid", linewidth = 0.25) +
+  
+  geom_segment(data = unique(dplyr::select(data_graph, cell_line)), aes(x = 3.5, xend = 3.5, y = 0, yend = 100),
+               colour = colour_pallette[6], linetype = "solid", linewidth = 0.25) +
+  
+  geom_segment(data = unique(dplyr::select(data_graph, cell_line)), aes(x = 6.5, xend = 6.5, y = 0, yend = 100),
+               colour = colour_pallette[6], linetype = "solid", linewidth = 0.25) +
+  
+  geom_segment(data = unique(dplyr::select(data_graph, cell_line)), aes(x = 9.4, xend = 9.4, y = 0, yend = 100),
+               colour = colour_pallette[6], linetype = "solid", linewidth = 0.25) +
+  
+  geom_segment(data = unique(dplyr::select(data_graph, cell_line)), aes(x = 12.4, xend = 12.4, y = 0, yend = 100),
+               colour = colour_pallette[6], linetype = "solid", linewidth = 0.25) +
+  
+  geom_segment(data = unique(dplyr::select(data_graph, cell_line)), aes(x = 15.4, xend = 15.4, y = 0, yend = 100),
+               colour = colour_pallette[6], linetype = "solid", linewidth = 0.25) +
+
+  geom_hline(yintercept = c(0, 100), colour = colour_pallette[6], linetype = "solid", linewidth = 0.25) +
+  
+  facet_nested(. ~ cell_line,
+               nest_line = element_line(linetype = 1, linewidth = 0.25),
+               resect = unit(0.04, "in"),
+               strip = strip_nested(clip = "off")) +
+  
+  labs(x = "GWL inhibitor C-604 (µM)", y = "%") +
+  
+  scale_fill_manual(values = c(colour_pallette[7], colour_pallette[8])) +
+  scale_x_continuous(expand = c(0, 0), breaks = c(2, 5, 8, 11, 14), labels = c(0, 0.25, 0.5, 1, 2)) +
+  scale_y_continuous(expand = c(0, 0), limits = c(-1.5, 125), breaks = c(0, 25, 50, 75, 100)) +
+  graph_theme +
+  theme(panel.border = element_blank(),
+        axis.text.x = element_text(colour = "#000000", size = 6, margin = margin(t = 2), angle = -90, hjust = 0, vjust = 0.5),
+        legend.position = "right",
+        legend.justification = "center",
+        legend.key.width = unit(5.5, 'pt'),
+        legend.key.height = unit(4, 'pt'),
+        legend.text = element_text(colour = "#000000", size = 6, margin = margin()),
+        legend.margin = margin(t = -6, l = -10),
+        legend.title = element_blank())
+  
+ggsave(paste(path_results, "graph_p21_proportions_C604_only.pdf", sep = ""), graph_p21_proportions_C604_only,
+       width = 95, height = 25, units = "mm", device = cairo_pdf)
+```
+
+## Plotting proportions of multinucleated cells in cells treated with C-604 only
+```{r}
+list_cell_lines <- c("HCC1395", "U2OS", "RPE-1", "MM231", "HeLa", "BT-549")
+
+data_graph <- data_multinucleated_proportions %>%
+  filter(RO3306 == 0, C604 %in% c(0, 0.25, 0.5, 1, 2)) %>%
+  complete(experiment, cell_line, C604, RO3306, nuclei) %>%
+  replace(is.na(.), 0) %>%
+  rename(treatment = C604) %>%
+  arrange(treatment, experiment, nuclei) %>%
+  group_by(cell_line, nuclei) %>%
+  mutate(x_axis = 1:n()) %>%
+  ungroup() %>%
+  mutate(nuclei = factor(nuclei, levels = c("1", "2", "3+")),
+         cell_line = factor(cell_line, levels = list_cell_lines))
+
+data_stats <- data.frame()
+
+for (l in unique(data_graph$cell_line)) {
+  for (c in unique(data_graph$nuclei)) {
+    for (t in unique(data_graph$treatment)[unique(data_graph$treatment) != 0]) {
+      
+      tmp.data <- filter(data_graph,
+                         cell_line == l,
+                         nuclei == c,
+                         treatment %in% c(0, t)) %>%
+        
+        dplyr::select(experiment, cell_line, treatment, nuclei, prop) %>%
+        spread(key = treatment, value = prop) %>%
+        replace(is.na(.), 0)
+      
+      tmp.stats <- t.test(tmp.data[[5]], tmp.data[[4]],
+                          alternative = "two.sided",
+                          paired = FALSE,
+                          var.equal = TRUE)
+    
+      tmp.results <- data.frame(cell_line = l,
+                                nuclei = c,
+                                treatment = t,
+                                p = tmp.stats$p.value)
+      
+      data_stats <- bind_rows(data_stats, tmp.results)
+    }
+  }
+}
+
+data_stats <- data_stats %>%
+  mutate(significance = case_when(p < 0.001 ~ "***",
+                                  p < 0.01 ~ "**",
+                                  p < 0.05 ~ "*",
+                                  .default = "ns"))
+
+data_stats_subset <- data_stats %>%
+  filter(nuclei %in% c("2", "3+")) %>%
+  group_by(cell_line, treatment) %>%
+  group_split() %>%
+  lapply((function (data) {
+    if(sum(data$significance == "ns") == 2) {
+      return(head(data, 1))
+    } else {
+      return(filter(data, significance != "ns"))
+    }
+  })) %>%
+  bind_rows() %>%
+  mutate(cell_line = factor(cell_line, levels = list_cell_lines),
+         x_axis = case_when(treatment == 0.25 ~ 5,
+                            treatment == 0.5 ~ 8,
+                            treatment == 1 ~ 11,
+                            treatment == 2 ~ 14))
+
+graph_multinucleated_proportions_C604_only <- ggplot() +
+  
+  geom_bar(data = data_graph,
+           aes(x = x_axis,
+               y = prop,
+               fill = nuclei,
+               group = nuclei),
+           stat = "identity", position = "stack",
+           width = 0.95, alpha = 1) +
+  
+  geom_text(data = filter(data_stats_subset, significance != "ns", nuclei == "2"),
+            aes(x = x_axis, y = 112, label = significance), size = 6/.pt, colour = colour_pallette[3], family = "Arial") +
+  geom_text(data = filter(data_stats_subset, significance != "ns", nuclei == "3+"),
+            aes(x = x_axis, y = 102, label = significance), size = 6/.pt, colour = colour_pallette[5], family = "Arial") +
+  geom_text(data = filter(data_stats_subset, significance == "ns"), 
+            aes(x = x_axis, y = 115, label = significance), size = 5.5/.pt, colour = colour_pallette[1], family = "Arial") +
+  
+  geom_segment(data = unique(dplyr::select(data_graph, cell_line)), aes(x = 0.6, xend = 0.6, y = 0, yend = 100),
+               colour = colour_pallette[6], linetype = "solid", linewidth = 0.25) +
+  
+  geom_segment(data = unique(dplyr::select(data_graph, cell_line)), aes(x = 3.5, xend = 3.5, y = 0, yend = 100),
+               colour = colour_pallette[6], linetype = "solid", linewidth = 0.25) +
+  
+  geom_segment(data = unique(dplyr::select(data_graph, cell_line)), aes(x = 6.5, xend = 6.5, y = 0, yend = 100),
+               colour = colour_pallette[6], linetype = "solid", linewidth = 0.25) +
+  
+  geom_segment(data = unique(dplyr::select(data_graph, cell_line)), aes(x = 9.4, xend = 9.4, y = 0, yend = 100),
+               colour = colour_pallette[6], linetype = "solid", linewidth = 0.25) +
+  
+  geom_segment(data = unique(dplyr::select(data_graph, cell_line)), aes(x = 12.4, xend = 12.4, y = 0, yend = 100),
+               colour = colour_pallette[6], linetype = "solid", linewidth = 0.25) +
+  
+  geom_segment(data = unique(dplyr::select(data_graph, cell_line)), aes(x = 15.4, xend = 15.4, y = 0, yend = 100),
+               colour = colour_pallette[6], linetype = "solid", linewidth = 0.25) +
+
+  geom_hline(yintercept = c(0, 100), colour = colour_pallette[6], linetype = "solid", linewidth = 0.25) +
+  
+  facet_nested(. ~ cell_line,
+               nest_line = element_line(linetype = 1, linewidth = 0.25),
+               resect = unit(0.04, "in"),
+               strip = strip_nested(clip = "off")) +
+  
+  labs(x = "GWL inhibitor C-604 (µM)", y = "%") +
+  
+  scale_fill_manual(values = c("#e6e8e6", colour_pallette[3], colour_pallette[5])) +
+  scale_x_continuous(expand = c(0, 0), breaks = c(2, 5, 8, 11, 14), labels = c(0, 0.25, 0.5, 1, 2)) +
+  scale_y_continuous(expand = c(0, 0), limits = c(-1.5, 125), breaks = c(0, 25, 50, 75, 100)) +
+  graph_theme +
+  theme(panel.border = element_blank(),
+        axis.text.x = element_text(colour = "#000000", size = 6, margin = margin(t = 2), angle = -90, hjust = 0, vjust = 0.5),
+        legend.position = "right",
+        legend.justification = "center",
+        legend.key.width = unit(5.5, 'pt'),
+        legend.key.height = unit(4, 'pt'),
+        legend.text = element_text(colour = "#000000", size = 6, margin = margin()),
+        legend.margin = margin(t = 4, l = -10),
+        legend.title = element_blank())
+  
+ggsave(paste(path_results, "graph_multinucleated_proportions_C604_only.pdf", sep = ""), graph_multinucleated_proportions_C604_only,
+       width = 95, height = 25, units = "mm", device = cairo_pdf)
+```
+
+## Plotting cell areas in cells treated with C-604 only
+```{r}
+list_cell_lines <- c("HCC1395", "U2OS", "RPE-1", "MM231", "HeLa", "BT-549")
+
+data_graph_cell_area <- data_normalised %>%
+  filter(cell_cycle != "Debris", RO3306 == 0, C604 %in% c(0, 0.25, 0.5, 1, 2)) %>%
+  complete(experiment, cell_line, C604, RO3306, p21) %>%
+  replace(is.na(.), 0) %>%
+  rename(treatment = C604) %>%
+  group_by(experiment, cell_line, treatment) %>%
+  group_split() %>%
+  lapply((function (data, n = 250) {
+    if (nrow(data) > n) {
+      data <- sample_n(data, n)
+      return(data)
+    } else {
+        return(data)
+      }
+  })) %>%
+  bind_rows() %>%
+  mutate(cell_line = factor(cell_line, levels = list_cell_lines),
+         treatment = factor(treatment, levels = c(0, 0.25, 0.5, 1, 2)))
+
+data_graph_cell_area_summary <- data_normalised %>%
+  filter(cell_cycle != "Debris", RO3306 == 0, C604 %in% c(0, 0.25, 0.5, 1, 2)) %>%
+  complete(experiment, cell_line, C604, RO3306, p21) %>%
+  replace(is.na(.), 0) %>%
+  rename(treatment = C604) %>%
+  reframe(area_cell_norm_median = median(area_cell_norm),
+          .by = c(experiment, cell_line, treatment)) %>%
+  mutate(cell_line = factor(cell_line, levels = list_cell_lines),
+         treatment = factor(treatment, levels = c(0, 0.25, 0.5, 1, 2)))
+
+data_graph_cell_area_FC <- data_graph_cell_area_summary %>%
+  filter(treatment %in% c(0, 2)) %>%
+  reframe(area_mean = mean(area_cell_norm_median), .by = c(cell_line, treatment)) %>%
+  spread(key = treatment, value = area_mean) %>%
+  mutate(FC = .[[3]] / .[[2]])
+
+data_stats <- data.frame()
+
+for (l in unique(data_graph$cell_line)) {
+  for (t in unique(data_graph$treatment)[unique(data_graph$treatment) != "0"]) {
+    
+    tmp.data <- filter(data_graph_cell_area_summary,
+                       cell_line == l,
+                       treatment %in% c(0, t)) %>%
+      
+      dplyr::select(experiment, cell_line, treatment, area_cell_norm_median) %>%
+      spread(key = treatment, value = area_cell_norm_median) %>%
+      replace(is.na(.), 0)
+    
+    tmp.stats <- t.test(tmp.data[[4]], tmp.data[[3]],
+                        alternative = "two.sided",
+                        paired = FALSE,
+                        var.equal = TRUE)
+    
+    tmp.results <- data.frame(cell_line = l,
+                              treatment = t,
+                              p = tmp.stats$p.value)
+    
+    data_stats <- bind_rows(data_stats, tmp.results)
+  }
+}
+
+data_stats <- data_stats %>%
+  mutate(significance = case_when(p < 0.001 ~ "***",
+                                  p < 0.01 ~ "**",
+                                  p < 0.05 ~ "*",
+                                  .default = "ns"),
+         cell_line = factor(cell_line, levels = list_cell_lines),
+         treatment = factor(treatment, levels = c(0.25, 0.5, 1, 2)))
+
+graph_cell_area_C604_only <- ggplot() +
+  
+  geom_quasirandom(data = data_graph_cell_area, aes(x = treatment, y = area_cell_norm),
+                   shape = 16, size = 0.5, alpha = 0.1,
+                   colour = colour_pallette[9]) +
+  
+  geom_point(data = data_graph_cell_area_summary, aes(x = treatment, y = area_cell_norm_median, shape = experiment, group = experiment),
+             size = 1, stroke = 0.35, position = position_dodge(0.35),
+             fill = "#FFFFFF", colour = colour_pallette[10]) +
+  
+  geom_hline(yintercept = c(0.25, 64), colour = colour_pallette[6], linetype = "solid", linewidth = 0.25) +
+  
+  geom_segment(data = unique(dplyr::select(data_graph, cell_line)), aes(x = 0.63, xend = 0.63, y = 0.25, yend = 64),
+               colour = colour_pallette[6], linetype = "solid", linewidth = 0.25) +
+  
+  geom_segment(data = unique(dplyr::select(data_graph, cell_line)), aes(x = 5.37, xend = 5.37, y = 0.25, yend = 64),
+               colour = colour_pallette[6], linetype = "solid", linewidth = 0.25) +
+  
+  geom_text(data = filter(data_stats, significance != "ns"),
+            aes(x = treatment, y = 80, label = significance), size = 6/.pt, colour = colour_pallette[10], family = "Arial") +
+  
+  geom_text(data = filter(data_stats, significance == "ns"), 
+            aes(x = treatment, y = 130, label = significance), size = 5.5/.pt, colour = colour_pallette[1], family = "Arial") +
+
+  facet_nested(. ~ cell_line,
+               nest_line = element_line(linetype = 1, linewidth = 0.25),
+               resect = unit(0.04, "in"),
+               strip = strip_nested(clip = "off")) +
+  
+  scale_x_discrete(expand = c(0, 0)) +
+  scale_y_continuous(trans = "log2", expand = c(0, 0), limits = c(0.2, 200)) +
+  scale_shape_manual(values = c(21, 22, 24)) +
+  labs(x = "GWL inhibitor C-604 (µM)", y = "Cell area (norm)") +
+  
+  graph_theme +
+  theme(panel.border = element_blank(),
+        strip.text.x = element_text(colour = "#000000", size = 6, margin = margin(b = 2, t = 2), vjust = 0),
+        axis.text.x = element_text(colour = "#000000", size = 6, margin = margin(t = 2), angle = -90, hjust = 0, vjust = 0.5)
+        )
+
+ggsave(paste(path_results, "graph_cell_area_C604_only.pdf", sep = ""), graph_cell_area_C604_only,
+       width = 95, height = 25, units = "mm", device = cairo_pdf)
+```
+
+## Plotting euclidean distances
+```{r}
+list_cell_lines <- c("HCC1395", "U2OS", "RPE-1", "MM231", "HeLa", "BT-549")
+data_graph <- mutate(data_euclidean_distance,
+                     cell_line = factor(cell_line, levels = list_cell_lines),
+                     treatment = ifelse(treatment == 0, 0.125, treatment))
+
+data_graph_models <- mutate(data_distance_models_graphs_summary, cell_line = factor(cell_line, levels = list_cell_lines))
+
+data_graph_auc <- mutate(data_auc_summary, cell_line = factor(cell_line, levels = list_cell_lines))
+
+graph_euclidean_distance <- ggplot() +
+  
+  geom_area(data = data_graph_models,
+            aes(x = treatment, y = dist_mean),
+            linewidth = 0.5,
+            colour = colour_pallette[2], 
+            fill = colour_pallette[3]) +
+  
+  geom_point(data = data_graph, aes(x = treatment, y = dist, shape = experiment),
+             size = 1.5, colour = colour_pallette[2], fill = "#FFFFFF", alpha = 1,
+             position = position_dodge(0.5)) +
+  
+  geom_text(data = data_graph_auc, aes(x = 0.1, y = 110, label = paste(round(auc_mean, 1), "±", paste(round(auc_sd, 1)))),
+            family = "Arial", size = 6/.pt, hjust = 0, vjust = 1, colour = colour_pallette[6]) +
+  
+  scale_x_continuous(expand = c(0, 0), trans = "log2", limits = c(0.09, 2), breaks = c(0.125, 0.25, 0.5, 1, 2), labels = c(0, 0.25, 0.5, 1, 2)) +
+  scale_y_continuous(expand = c(0, 0), limits = c(min(data_graph_models$dist_mean), 115)) +
+  scale_shape_manual(values = c(21, 22, 24)) +
+  labs(x = "GWL inhibitor C-604 (µM)", y = "Euclidean\ndistance") +
+  facet_grid(. ~ cell_line) +
+  graph_theme +
+  theme(axis.text.x = element_text(colour = "#000000", size = 6, margin = margin(t = 2), angle = -90, hjust = 0, vjust = 0.5, family = "Arial"),
+        panel.spacing.y = unit(0.1, "lines"),
+        panel.spacing.x = unit(0.1, "lines"))
+
+ggsave(paste(path_results, "graph_euclidean_distance.pdf", sep = ""), graph_euclidean_distance,
+       width = 84, height = 25, units = "mm", device = cairo_pdf)
+```
+
+## Creating a composite graph of cell cycle and p21+ proportions
+```{r}
+graph_proportions_composite <- plot_grid(
+  
+  graph_cell_cycle_proportions_C604_only,
+  graph_p21_proportions_C604_only,
+  graph_multinucleated_proportions_C604_only,
+  graph_cell_area_C604_only,
+  nrow = 5, ncol = 1,
+  align = "hv",
+  axis = "lr")
+
+ggsave(paste(path_results, "graph_proportions_composite_C604_only.pdf", sep = ""), graph_proportions_composite,
+       width = 90, height = 125, units = "mm", device = cairo_pdf)
+```
+
+## Plotting areas under the curves (AUC) of euclidean distances
+```{r}
+list_cell_line = c("HCC1395", "U2OS", "RPE-1", "MM231", "HeLa", "BT-549")
+
+data_graph <- data_auc_summary %>%
+  mutate(cell_line = factor(cell_line, levels = list_cell_line))
+
+data_graph_points <- data_auc %>%
+  mutate(cell_line = factor(cell_line, levels = list_cell_line))
+
+graph_ED50 <- ggplot(data_graph_points) +
+  
+  geom_bar(aes(x = cell_line, y = auc, group = experiment),
+           stat = "identity", position = position_dodge(1), colour = "#FFFFFF", fill = colour_pallette[3],
+           linewidth = 0.25, alpha = 1, width = 1) +
+  
+  geom_segment(x = 1.5, xend = 1.5, y = 0, yend = max(data_graph_points$auc),
+               colour = colour_pallette[6], linetype = "solid", linewidth = 0.25) +
+  
+  geom_segment(x = 2.5, xend = 2.5, y = 0, yend = max(data_graph_points$auc),
+               colour = colour_pallette[6], linetype = "solid", linewidth = 0.25) +
+  
+  geom_segment(x = 3.5, xend = 3.5, y = 0, yend = max(data_graph_points$auc),
+               colour = colour_pallette[6], linetype = "solid", linewidth = 0.25) +
+  
+  geom_segment(x = 4.5, xend = 4.5, y = 0, yend = max(data_graph_points$auc),
+               colour = colour_pallette[6], linetype = "solid", linewidth = 0.25) +
+  
+  geom_segment(x = 5.5, xend = 5.5, y = 0, yend = max(data_graph_points$auc),
+               colour = colour_pallette[6], linetype = "solid", linewidth = 0.25) +
+  
+  geom_vline(xintercept = 6.475, colour = colour_pallette[6], linetype = "solid", linewidth = 0.25) +
+  geom_hline(yintercept = max(data_graph_points$auc) - 1, colour = colour_pallette[6], linetype = "solid", linewidth = 0.25) +
+  
+  scale_x_discrete(expand = c(0, 0)) +
+  scale_y_continuous(expand = c(0, 0), limits = c(0, max(data_graph_points$auc)), breaks = c(0, 30, 60, 90, 120)) +
+  scale_shape_manual(values = c(21, 22, 24)) +
+  labs(x = "", y = "AUC") +
+  graph_theme +
+  theme(plot.margin = margin(b = 0.2, l = 0.2, t = 0.2, r = 0.75, unit = "lines"),
+        axis.line.x = element_line(colour = "#000000", linewidth = 0.25),
+        axis.line.y = element_line(colour = "#000000", linewidth = 0.25),
+        panel.border = element_blank(),
+        axis.text.x = element_text(colour = "#000000", size = 6, margin = margin(t = 2), angle = -45, hjust = 0, vjust = 0.5, family = "Arial"))
+
+ggsave(paste(path_results, "graph_AUC_euclidean_distance.pdf", sep = ""), graph_ED50,
+       width = 35, height = 26 , units = "mm", device = cairo_pdf)
+```
+
+
+
+
+
+
+
+
