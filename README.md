@@ -32,11 +32,11 @@ Use data MS_prometaphase_C-604_vs_DMSO_hits.csv, MS_prometaphase_C-604_vs_DMSO.x
 ### R-script_TCGA_analysis.Rmd
 Analysis of TCGA expression profiles
 
-## R-script_WB_analysis_ENSA-P_EC50.Rmd
+### R-script_WB_analysis_ENSA-P_EC50.Rmd
 Analysis of EC50 values derived from phospho-ENSA(S67)/ARPP19(S62) changes following Greatwall inhibition  
 Use data WB_C-604_ENSA-P_effect.xlsx
 
-## R-script_WB_analysis_protein-expression.Rmd
+### R-script_WB_analysis_protein-expression.Rmd
 Analysis of protein expresion levels of B55a, GWL, PP2Ca/b and ENSA  
 Use data WB_B55a-GWL-PP2C-ENSA_protein-levels.xlsx
 
