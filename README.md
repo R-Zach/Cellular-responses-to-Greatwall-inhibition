@@ -2,8 +2,7 @@
 Compilation of data analysis tools and procedures
 
 ## R-script_IF_single-cell_analysis_C-604_RO-3306.Rmd
-IF microscopy analysis of cellular responses to Greatwall and Cdk1 inhibition< br / >
-Use data IF_single-cell_C-604_RO-3306.csv
+IF microscopy analysis of cellular responses to Greatwall and Cdk1 inhibition< br / >Use data IF_single-cell_C-604_RO-3306.csv
 
 ## R-script_IF_single-cell_analysis_off-target_siRNAs.Rmd
 IF microscopy analysis of synergies between depletion of suspected off-target kinases and partial Greatwall inhibition
