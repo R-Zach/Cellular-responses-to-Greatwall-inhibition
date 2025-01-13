@@ -1,0 +1,698 @@
+---
+title: "Treatment with C-604 (3 days, LC, master project data)"
+output: html_document
+date: "2024-10-14"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Loading Libraries
+```{r message=FALSE, warning=FALSE, paged.print=FALSE}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(ggforce)
+library(ggExtra)
+library(grid)
+library(gridExtra)
+library(ggridges)
+library(ggbeeswarm)
+library(gghalves)
+library(cowplot)
+library(gplots)
+library(lattice)
+library(ggthemes)
+library(scales)
+library(seqinr)
+library(tidyverse)
+library(Dict)
+library(viridis)
+library(latex2exp)
+library(ggnewscale)
+library(ggh4x)
+library(extrafont)
+library(gtable)
+library(rstatix)
+library(drc)
+library(modelr)
+library(readxl)
+library(pracma)
+```
+
+## Establishing paths to data and results folders
+```{r}
+path_data <- ### Path to IF_single-cell_RPE-1_WT_p53-null.csv
+path_results <- ### Path to an export folder
+```
+
+## Establoshing ggplot theme arguments
+```{r}
+graph_theme <- theme(
+  plot.margin = margin(b = 0.2, l = 0.2, t = 0.2, r = 0.2, unit = "lines"),
+  text = element_text(size = 1, family = "Arial"),
+  panel.spacing.y = unit(0.1, "lines"),
+  panel.spacing.x = unit(0.1, "lines"),
+  panel.border = element_rect(colour = "#000000", fill = NA, linewidth = 0.5),
+  panel.background = element_blank(),
+  panel.grid.major.y = element_blank(),
+  panel.grid.minor.y = element_blank(),
+  panel.grid.major.x = element_blank(),
+  panel.grid.minor.x = element_blank(),
+  strip.background = element_blank(),
+  strip.text.x = element_text(colour = "#000000", size = 6, margin = margin(b = 2, t = 2), vjust = 0, family = "Arial"),
+  strip.text.y = element_text(colour = "#000000", size = 6, margin = margin(l = 2), family = "Arial"),
+  strip.clip = "off",
+  axis.ticks.x = element_line(colour = "#000000", linewidth = 0.35),
+  axis.ticks.y = element_line(colour = "#000000", linewidth = 0.35),
+  axis.ticks.length = unit(0.1, "lines"),
+  axis.title.x = element_text(colour = "#000000", size = 6, margin = margin(t = 3), family = "Arial"),
+  axis.title.y = element_text(colour = "#000000", size = 6, margin = margin(r = 2), family = "Arial"),
+  axis.text.x = element_text(colour = "#000000", size = 6, margin = margin(t = 2), family = "Arial"),
+  axis.text.y = element_text(colour = "#000000", size = 6, margin = margin(r = 2), family = "Arial"),
+  plot.title = element_blank(),
+  legend.key = element_rect(fill = "#FFFFFF"),
+  legend.position = "none",
+  legend.justification = "left",
+  legend.key.width = unit(2, 'pt'),
+  legend.key.height = unit(2, 'pt'),
+  legend.text = element_text(colour = "#000000", size = 6, margin = margin(r = 1)),
+  legend.margin = margin(r = 0, b = 0, l = 0, t = 0),
+  legend.title = element_blank())
+```
+
+## Establishing colour pallette
+```{r}
+colour_pallette <- c("#D4D3CF", "#DC6B83", "#75B1CE", "#D8C367", "#526C94", "#000000", "#ccdba2", "#889466", "#c6b2d1", "#654875")
+```
+
+## Establishing a function to normalise the raw IF data
+```{r}
+fun_normalise <- function (data, values, ref, bins = 100) {
+
+  # Constructing the subset data-set containing the control data
+  
+  for (v in values) {
+    
+    if (v == "DAPI_total") {data.ref <- filter(data, condition %in% ref, EdU == "negative")}
+    else {data.ref <- subset(data, condition %in% ref)}
+
+    # log10-transformation of the data
+    data.ref <- mutate(data.ref, value_log2 = log2(!!sym(v)))
+    
+    # Construction of the histogram
+    histogram <- hist(x = data.ref$value_log2,
+                      breaks = bins,
+                      main = paste(unique(data$experiment), unique(data$cell_line), sep = " "),
+                      xlab = paste("log2", v, sep = " "))
+    
+    # Selection of the histogram index (bin) with the highest number of observations
+    index_max <- match(max(histogram$counts), histogram$counts)
+    
+    # Determination of the mid-log10-value of the bin with the highest number of observations
+    value_max <- histogram$mids[index_max]
+    
+    # Determination of the normalisation factor (reversing the log10-transformation)
+    normalisation_factor <- 2 ^ value_max
+    
+    # Normalisation of the original values
+    data <- mutate(data, !!sym(paste(v, "norm", sep = "_")) := !!sym(v) / normalisation_factor)
+    
+    # Normalised DAPI intensities are multiplied by 2 so G1 populations center around 2 (2N) and G2 populations center around 4 (4N)
+    if (v == "DAPI_total") {data <- mutate(data, !!sym(paste(v, "norm", sep = "_")) := 2 * !!sym(paste(v, "norm", sep = "_")))}
+  }
+  return(data)
+}
+```
+
+## Establishing a function to establish density of points on a scatter plot
+```{r}
+get_density <- function(x, y, ...) {
+  dens <- MASS::kde2d(x, y, ...)
+  ix <- findInterval(x, dens$x)
+  iy <- findInterval(y, dens$y)
+  ii <- cbind(ix, iy)
+  return(dens$z[ii])
+}
+```
+
+## Creating a dataframe containing Hoechst, EdU and p21 intensity thresholds
+```{r}
+data_thresholds <- bind_rows(data.frame(feature = "Hoechst", T1 = 1.5, T2 = 3, T3 = 6),
+                             data.frame(feature = "EdU", T1 = 1.5, T2 = NA, T3 = NA),
+                             data.frame(feature = "p21", T1 = 1.3, T2 = NA, T3 = NA))
+
+data_thresholds
+```
+
+## Importing data
+```{r}
+data_raw <- read.csv(path_data, sep = ",")
+
+head(data_raw)
+```
+
+## Normalising data
+```{r}
+data_normalised = data_raw2 %>%
+
+  reframe(nuclei_count = n(),
+          nuclei_area = sum(area_nucleus),
+          DAPI_total = sum(integrated_int_DAPI),
+          EdU_mean = mean(intensity_mean_EdU_nucleus) / mean(intensity_mean_EdU_cyto),
+          p21_mean = mean(intensity_mean_p21_nucleus),
+          .by = c(experiment, plate_id, well, well_id, image_id, cell_line, condition, cyto_id, area_cell)) %>%
+  
+  group_by(experiment, cell_line) %>%
+  group_split() %>%
+  lapply(fun_normalise, values = c("EdU_mean", "p21_mean"), ref = c("0")) %>%
+  bind_rows() %>%
+  mutate(EdU = case_when(EdU_mean_norm <= filter(data_thresholds, feature == "EdU")$T1 ~ "negative",
+                         EdU_mean_norm > filter(data_thresholds, feature == "EdU")$T1 ~ "positive"),
+         p21 = case_when(p21_mean_norm <= filter(data_thresholds, feature == "p21")$T1 ~ "negative",
+                         p21_mean_norm > filter(data_thresholds, feature == "p21")$T1 ~ "positive")) %>%
+  group_by(experiment, cell_line) %>%
+  group_split() %>%
+  lapply(fun_normalise, values = c("DAPI_total", "area_cell", "nuclei_area"), ref = c("0")) %>%
+  bind_rows() %>%
+  
+  mutate(Hoechst = case_when(DAPI_total_norm <= filter(data_thresholds, feature == "Hoechst")$T1 ~ "Debris",
+                             DAPI_total_norm <= filter(data_thresholds, feature == "Hoechst")$T2 ~ "2N",
+                             DAPI_total_norm <= filter(data_thresholds, feature == "Hoechst")$T3 ~ "4N",
+                             DAPI_total_norm > filter(data_thresholds, feature == "Hoechst")$T3 ~ "8N+")) %>%
+  
+  mutate(cell_cycle = case_when(Hoechst == "Debris" ~ "Debris",
+                                Hoechst == "2N" & EdU == "negative" ~ "2N",
+                                Hoechst == "4N" & EdU == "negative" ~ "4N",
+                                Hoechst == "2N" & EdU == "positive" ~ "S",
+                                Hoechst == "4N" & EdU == "positive" ~ "S",
+                                Hoechst == "8N+" ~ "8N+",
+                                .default = "Unassigned"))
+
+head(data_normalised)
+```
+
+## Establishing proportions of cell cycle groups
+```{r}
+data_cell_cycle_proportions <- data_normalised %>%
+  filter(cell_cycle != "Debris") %>%
+  reframe(count = n(), .by = c(experiment, cell_line, condition, cell_cycle)) %>%
+  group_by(experiment, cell_line, condition) %>%
+  mutate(prop = 100 * count / sum(count)) %>%
+  ungroup() %>%
+  dplyr::select(-count) %>%
+  spread(key = cell_cycle, value = prop) %>%
+  replace(is.na(.), 0) %>%
+  gather(key = cell_cycle, value = prop, 4:7) %>%
+  separate(col = cell_line, into = c("cell_line", "genotype"), sep = "_")
+
+head(data_cell_cycle_proportions)
+```
+## Establishing proportions of p21-positive cells
+```{r}
+data_p21_proportions <- data_normalised %>%
+  filter(!(cell_cycle %in% c("Debris", "S"))) %>%
+  reframe(count = n(), .by = c(experiment, cell_line, condition, p21)) %>%
+  group_by(experiment, cell_line, condition) %>%
+  mutate(prop = 100 * count / sum(count)) %>%
+  ungroup() %>%
+  dplyr::select(-count) %>%
+  spread(key = p21, value = prop) %>%
+  replace(is.na(.), 0) %>%
+  gather(key = p21, value = prop, 4:5) %>%
+  separate(col = cell_line, into = c("cell_line", "genotype"), sep = "_") %>%
+  filter(condition %in% c("0", "2"))
+
+data_p21_proportions
+```
+
+## Establishing proportions of multinucleated cells
+```{r}
+data_multinucleated_proportions <- data_normalised %>%
+  filter(cell_cycle != "Debris") %>%
+  mutate(nuclei = case_when(nuclei_count == 1 ~ "1",
+                            nuclei_count == 2 ~ "2",
+                            nuclei_count > 2 ~ "3+")) %>%
+  reframe(count = n(), .by = c(experiment, cell_line, condition, nuclei)) %>%
+  group_by(experiment, cell_line, condition) %>%
+  mutate(prop = 100 * count / sum(count)) %>%
+  ungroup() %>%
+  dplyr::select(-count) %>%
+  spread(key = nuclei, value = prop) %>%
+  replace(is.na(.), 0) %>%
+  gather(key = nuclei, value = prop, 4:6) %>%
+  separate(col = cell_line, into = c("cell_line", "genotype"), sep = "_") %>%
+  filter(condition %in% c("0", "2"))
+
+data_multinucleated_proportions
+```
+
+## Establishing spatial densities of data points in EdU ~ Hoechst scatterplots
+```{r}
+data_normalised_subset_random <- data_normalised %>%
+  filter(condition %in% c("0", "2")) %>%
+  
+  group_by(experiment, cell_line, condition) %>%
+  group_split() %>%
+  lapply((function (data, n = 2000) {
+    if (nrow(data) > n) {
+      data <- sample_n(data, n)
+      return(data)
+    } else {
+        return(data)
+      }
+  })) %>%
+  bind_rows() %>%
+  group_by(cell_line) %>%
+  mutate(density_DAPI_EdU = get_density(log2(DAPI_total_norm), log2(EdU_mean_norm), n = 150, h = c(0.5, 0.5))) %>%
+  separate(col = cell_line, into = c("cell_line", "genotype"), sep = "_") %>%
+  ungroup()
+```
+
+## Plotting EdU ~ Hoechst scatterplots and marginal histograms of Hoechst intensities
+```{r}
+data_graph <- data_normalised_subset_random %>%
+  mutate(cell_cycle = factor(cell_cycle, levels = c("Debris", "2N", "S", "4N", "8N+")),
+         genotype = factor(genotype, levels = c("WT", "p53KO"), labels = c("WT", "p53-null")),
+         dataset = "GWL inhibitor C-604 (µM)")
+
+graph_marginal_Hoechst <- ggplot(data = data_graph, aes(x = DAPI_total_norm, y = condition)) +
+  
+  stat_binline(linewidth = 0.25, bins = 50, colour = "#000000", fill = colour_pallette[5], alpha = 0.5) +
+  scale_x_continuous(trans = "log2", limits = c(1.3, 35), breaks = c(2, 4, 8, 16, 32)) +
+  scale_y_discrete(limits = rev) +
+  labs(y = "C-604\n(µM)") +
+  facet_nested(. ~ cell_line + genotype,
+               nest_line = element_line(linetype = 1, linewidth = 0.25),
+               resect = unit(0.04, "in"),
+               strip = strip_nested(clip = "off")) +
+  graph_theme +
+  theme(
+    strip.text.x = element_text(colour = "#000000", size = 6, margin = margin(b = 3, t = 2)),
+    strip.text.y = element_blank(),
+    axis.text.y = element_text(colour = "#000000", size = 6, margin = margin(r = 2), hjust = 1, vjust = 0),
+    axis.title.y = element_text(colour = "#000000", size = 6, margin = margin(r = 2), family = "Arial"),
+    panel.spacing.y = unit(0.075, "lines"),
+    panel.spacing.x = unit(0.075, "lines"),
+    panel.border = element_blank(),
+    plot.margin = margin(b = 0.1, l = 0.1, t = 0.1, r = 0.1, unit = "lines"),
+    axis.ticks.x = element_blank(),
+    axis.title.x = element_blank(),
+    axis.text.x = element_blank())
+
+graph_cell_cycle_scatter <- ggplot() +
+  
+  geom_vline(xintercept = filter(data_thresholds, feature == "Hoechst")$T1, linewidth = 0.3, linetype = "dashed", colour = "#000000") +
+  geom_vline(xintercept = filter(data_thresholds, feature == "Hoechst")$T2, linewidth = 0.3, linetype = "dashed", colour = "#000000") +
+  geom_vline(xintercept = filter(data_thresholds, feature == "Hoechst")$T3, linewidth = 0.3, linetype = "dashed", colour = "#000000") +
+  geom_hline(yintercept = filter(data_thresholds, feature == "EdU")$T1, linewidth = 0.3, linetype = "dashed", colour = "#000000") +
+  
+  geom_point(data = data_graph,
+             aes(x = DAPI_total_norm, y = EdU_mean_norm, colour = cell_cycle, fill = cell_cycle, alpha = density_DAPI_EdU),
+             size = 0.75, stroke = 0.1, shape = 16) +
+  
+  scale_colour_manual(values = c(colour_pallette[1], colour_pallette[2], colour_pallette[3], colour_pallette[4], colour_pallette[5], colour_pallette[6])) +
+  
+  scale_x_continuous(trans = "log2", limits = c(1.3, 35), breaks = c(2, 4, 8, 16, 32)) +
+  scale_y_continuous(trans = "log2", limits = c(0.9, 24), breaks = c(1, 2, 4, 8, 16)) +
+  labs(x = "Hoechst (normalised)", y = "EdU (normalised)") +
+  scale_alpha_continuous(range = c(0.1, 1)) +
+  facet_nested(dataset + condition ~ cell_line + genotype, strip = strip_nested(clip = "off")) +
+  graph_theme +
+  theme(
+    axis.text.x = element_text(colour = "#000000", size = 6, angle = -90, hjust = 0, vjust = 0.5, margin = margin(t = 2), family = "Arial"),
+    axis.text.y = element_text(colour = "#000000", size = 6, margin = margin(r = 0), family = "Arial"),
+    axis.title.x = element_text(colour = "#000000", size = 6, margin = margin(t = 2), family = "Arial"),
+    axis.title.y = element_text(colour = "#000000", size = 6, margin = margin(r = 2), family = "Arial"),
+    strip.text.y = element_text(colour = "#000000", size = 6, margin = margin(l = 2), vjust = 0, family = "Arial"),
+    panel.spacing.y = unit(0.075, "lines"),
+    panel.spacing.x = unit(0.075, "lines"),
+    plot.margin = margin(b = 0.1, l = 0.1, t = -0.35, r = 0.1, unit = "lines"),
+    strip.text.x = element_blank(),
+    legend.position = "none",
+    legend.justification = "center",
+    legend.direction = "vertical",
+    legend.key.width = unit(1, 'mm'),
+    legend.key.height = unit(1, 'mm'),
+    legend.text = element_text(colour = "#000000", size = 6),
+    legend.margin = margin(b = 50, r = -7),
+    legend.spacing.y = unit(1, "mm"),
+    legend.title = element_blank()) +
+  guides(alpha = FALSE,
+         color = guide_legend(override.aes = list(size = 2),
+                              nrow = 6,
+                              label.position = "left"))
+
+graph_cell_cycle <- plot_grid(graph_marginal_Hoechst,
+                              graph_cell_cycle_scatter,
+                              align = "v", axis = "lr",
+                              rel_heights = c(1.25, 2),
+                              rel_widths = c(1, 1),
+                              nrow = 2, ncol = 1)
+
+ggsave(paste(path_results, "graph_cell_cycle_scatterplot.pdf", sep = ""), graph_cell_cycle,
+       width = 35, height = 42.5, units = "mm", device = cairo_pdf)
+```
+
+## Plotting p21 intensity distributions
+```{r}
+data_graph <- data_normalised_subset_random %>%
+  filter(cell_cycle != "Debris") %>%
+  mutate(cell_cycle = factor(cell_cycle, levels = c("Debris", "2N", "S", "4N", "8N+")),
+         genotype = factor(genotype, levels = c("WT", "p53KO"), labels = c("WT", "p53-null")),
+         dataset = "GWL inhibitor C-604 (µM)")
+
+data_graph_summary <- data_graph %>%
+  reframe(p21_median = median(p21_mean_norm), .by = c(experiment, cell_line, genotype, condition, cell_cycle, dataset)) %>%
+  mutate(genotype = factor(genotype, levels =  c("WT", "p53-null")))
+
+list_treatments <- unique(data_graph$condition)
+data_stats <- data.frame()
+
+for (l in unique(data_graph_summary$genotype)) {
+  for (t in list_treatments[list_treatments != "0"]) {
+    for (c in unique(data_graph_summary$cell_cycle)) {
+      
+      tmp.data <- filter(data_graph_summary,
+                         genotype == l,
+                         condition %in% c("0", t),
+                         cell_cycle == c) %>%
+        
+        dplyr::select(dataset, experiment, cell_line, genotype, condition, cell_cycle, p21_median) %>%
+        spread(key = condition, value = p21_median)
+
+        tmp.stats <- t.test(tmp.data[[7]], tmp.data[[6]],
+                            alternative = "two.sided",
+                            paired = FALSE,
+                            var.equal = TRUE)
+        
+        tmp.results <- data.frame(genotype = l,
+                                cell_line = unique(tmp.data$cell_line),
+                                cell_cycle = c,
+                                condition = t,
+                                p = tmp.stats$p.value)
+      
+        data_stats <- bind_rows(data_stats, tmp.results)
+    }
+  }
+}
+
+data_stats <- data_stats %>%
+  mutate(significance = case_when(p < 0.001 ~ "***",
+                                  p < 0.01 ~ "**",
+                                  p < 0.05 ~ "*",
+                                  .default = "ns"),
+         
+         cell_cycle = factor(cell_cycle, levels = c("2N", "S", "4N", "8N+")),
+         dataset = "GWL inhibitor C-604 (µM)",
+         genotype = factor(genotype, levels =  c("WT", "p53-null")))
+
+graph_marginal_p21 <- ggplot(data = data_graph, aes(x = p21_mean_norm, y = condition)) +
+  
+  stat_binline(linewidth = 0.25, bins = 50, colour = "#000000", fill = colour_pallette[8], alpha = 0.5) +
+  scale_x_continuous(trans = "log2", limits = c(0.75, 5), breaks = c(1, 2, 4)) +
+  scale_y_discrete(limits = rev) +
+  labs(y = "C-604\n(µM)") +
+  facet_nested(. ~ cell_line + genotype,
+               nest_line = element_line(linetype = 1, linewidth = 0.25),
+               resect = unit(0.04, "in"),
+               strip = strip_nested(clip = "off")) +
+  graph_theme +
+  theme(
+    strip.text.x = element_text(colour = "#000000", size = 6, margin = margin(b = 3, t = 2)),
+    strip.text.y = element_blank(),
+    axis.text.y = element_text(colour = "#000000", size = 6, margin = margin(r = 2), hjust = 1, vjust = 0),
+    axis.title.y = element_text(colour = "#000000", size = 6, margin = margin(r = 2), family = "Arial"),
+    panel.spacing.y = unit(0.075, "lines"),
+    panel.spacing.x = unit(0.075, "lines"),
+    panel.border = element_blank(),
+    plot.margin = margin(b = 0.1, l = 0.1, t = 0.1, r = 0.1, unit = "lines"),
+    axis.ticks.x = element_blank(),
+    axis.title.x = element_blank(),
+    axis.text.x = element_blank())
+
+graph_p21_points <- ggplot() +
+ 
+  geom_point(data = data_graph,
+             aes(x = p21_mean_norm, y = cell_cycle, colour = cell_cycle),
+             size = 0.5, stroke = 0.1, shape = 16,
+             position = position_jitter(0, 0.35),
+             alpha = 0.05) +
+  
+  geom_point(data = data_graph_summary, aes(x = p21_median, y = cell_cycle, shape = experiment, group = experiment),
+             size = 0.75, stroke = 0.25, position = position_dodge(0.35),
+             fill = "#FFFFFF", colour = colour_pallette[6]) +
+  
+  geom_text(data = filter(data_stats, significance != "ns"), 
+            aes(x = 4.5, y = cell_cycle, label = significance, colour = cell_cycle), size = 5.5/.pt,
+            angle = -90, family = "Arial") +
+  
+  geom_text(data = filter(data_stats, significance == "ns"), 
+            aes(x = 4.9, y = cell_cycle, label = significance), size = 5/.pt, colour = colour_pallette[1],
+            angle = -90, family = "Arial") +
+  
+  scale_shape_manual(values = c(21, 22, 24)) +
+  scale_colour_manual(values = c(colour_pallette[2], colour_pallette[3], colour_pallette[4], colour_pallette[5], colour_pallette[6])) +
+  
+  scale_x_continuous(trans = "log2", limits = c(0.75, 5.5), breaks = c(1, 2, 4)) +
+  scale_y_discrete(limits = rev) +
+  labs(x = "p21 (normalised)", y = "Cell cycle phase") +
+  scale_alpha_continuous(range = c(0.1, 1)) +
+  facet_nested(dataset + condition ~ cell_line + genotype, strip = strip_nested(clip = "off")) +
+  graph_theme +
+  theme(
+    axis.text.y = element_text(colour = "#000000", size = 6, margin = margin(r = 0), family = "Arial"),
+    axis.title.x = element_text(colour = "#000000", size = 6, margin = margin(t = 2), family = "Arial"),
+    axis.title.y = element_text(colour = "#000000", size = 6, margin = margin(r = 2), family = "Arial"),
+    strip.text.y = element_text(colour = "#000000", size = 6, margin = margin(l = 2), vjust = 0, family = "Arial"),
+    panel.spacing.y = unit(0.075, "lines"),
+    panel.spacing.x = unit(0.075, "lines"),
+    plot.margin = margin(b = 0.1, l = 0.1, t = -0.35, r = 0.1, unit = "lines"),
+    strip.text.x = element_blank(),
+    legend.position = "none",
+    legend.justification = "center",
+    legend.direction = "vertical",
+    legend.key.width = unit(1, 'mm'),
+    legend.key.height = unit(1, 'mm'),
+    legend.text = element_text(colour = "#000000", size = 6),
+    legend.margin = margin(b = 50, r = -7),
+    legend.spacing.y = unit(1, "mm"),
+    legend.title = element_blank()) +
+  guides(alpha = FALSE,
+         color = guide_legend(override.aes = list(size = 2),
+                              nrow = 6,
+                              label.position = "left"))
+
+graph_p21 <- plot_grid(graph_marginal_p21,
+                       graph_p21_points,
+                       align = "v", axis = "lr",
+                       rel_heights = c(1.25, 2),
+                       rel_widths = c(1, 1),
+                       nrow = 2, ncol = 1)
+
+ggsave(paste(path_results, "graph_p21_points_distributions.pdf", sep = ""), graph_p21,
+       width = 35, height = 42.5, units = "mm", device = cairo_pdf)
+```
+
+## Creating a composite scatterplot
+```{r}
+graph_composite <- plot_grid(
+  graph_cell_cycle, graph_p21,
+  ncol = 2, nrow = 1,
+  align = "hv")
+
+ggsave(paste(path_results, "graph_scatterplots_composite.pdf", sep = ""), graph_composite,
+       width = 70, height = 42.5, units = "mm", device = cairo_pdf)
+```
+
+## Plotting proportions of 2N, S, 4N and 8N+ cell cycle groups in cells treated with C-604 only
+```{r}
+data_graph <- data_cell_cycle_proportions %>%
+  filter(condition %in% c("0", "2")) %>%
+  complete(experiment, cell_line, condition, cell_cycle) %>%
+  replace(is.na(.), 0) %>%
+  rename(treatment = condition) %>%
+  arrange(treatment, experiment, cell_cycle) %>%
+  group_by(genotype, cell_cycle) %>%
+  mutate(x_axis = 1:n()) %>%
+  ungroup() %>%
+  mutate(cell_cycle = factor(cell_cycle, levels = c("2N", "S", "4N", "8N+")),
+         genotype = factor(genotype, levels = c("WT", "p53KO"), labels = c("WT", "p53-null")))
+
+data_stats <- data.frame()
+
+for (t in unique(data_graph$treatment)) {
+  for (c in unique(data_graph$cell_cycle)) {
+    for (g in unique(data_graph$genotype)[unique(data_graph$genotype) != "WT"]) {
+      
+      tmp.data <- filter(data_graph,
+                         treatment == t,
+                         cell_cycle == c,
+                         genotype %in% c("WT", g)) %>%
+        
+        dplyr::select(experiment, cell_line, genotype, treatment, cell_cycle, prop) %>%
+        spread(key = genotype, value = prop) %>%
+        replace(is.na(.), 0)
+      
+      tmp.stats <- t.test(tmp.data[[6]], tmp.data[[5]],
+                          alternative = "two.sided",
+                          paired = FALSE,
+                          var.equal = TRUE)
+    
+      tmp.results <- data.frame(cell_line = unique(tmp.data$cell_line),
+                                genotype = g,
+                                cell_cycle = c,
+                                treatment = t,
+                                p = tmp.stats$p.value)
+      
+      data_stats <- bind_rows(data_stats, tmp.results)
+    }
+  }
+}
+
+data_stats <- data_stats %>%
+  mutate(significance = case_when(p < 0.001 ~ "***",
+                                  p < 0.01 ~ "**",
+                                  p < 0.05 ~ "*",
+                                  .default = "ns"))
+
+graph_cell_cycle_proportions <- ggplot() +
+  
+  geom_bar(data = data_graph,
+           aes(x = x_axis,
+               y = prop,
+               fill = cell_cycle,
+               group = cell_cycle),
+           stat = "identity", position = "stack",
+           width = 0.95, alpha = 1) +
+  
+  geom_segment(data = data_graph, aes(x = 0.575, xend = 0.575, y = 0, yend = 100),
+               colour = colour_pallette[6], linetype = "solid", linewidth = 0.25) +
+  
+  geom_segment(data = data_graph, aes(x = 3.5, xend = 3.5, y = 0, yend = 100),
+               colour = colour_pallette[6], linetype = "solid", linewidth = 0.25) +
+  
+  geom_segment(data = data_graph, aes(x = 6.425, xend = 6.425, y = 0, yend = 100),
+               colour = colour_pallette[6], linetype = "solid", linewidth = 0.25) +
+
+  geom_hline(yintercept = c(0, 100), colour = colour_pallette[6], linetype = "solid", linewidth = 0.25) +
+  
+  facet_nested(. ~ cell_line + genotype,
+               nest_line = element_line(linetype = 1, linewidth = 0.25),
+               resect = unit(0.04, "in"),
+               strip = strip_nested(clip = "off")) +
+  
+  labs(x = "C-604 (µM)", y = "%") +
+  
+  scale_fill_manual(values = c(colour_pallette[2], colour_pallette[3], colour_pallette[4], colour_pallette[5])) +
+  scale_x_continuous(expand = c(0, 0), breaks = c(2, 5), labels = c(0, 2)) +
+  scale_y_continuous(expand = c(0, 0), limits = c(-1.5, 125), breaks = c(0, 25, 50, 75, 100)) +
+  graph_theme +
+  theme(panel.border = element_blank(),
+        legend.position = "none",
+        legend.justification = "center",
+        legend.key.width = unit(5.5, 'pt'),
+        legend.key.height = unit(4, 'pt'),
+        legend.text = element_text(colour = "#000000", size = 6, margin = margin()),
+        legend.margin = margin(t = 4, l = -10),
+        legend.title = element_blank())
+  
+ggsave(paste(path_results, "graph_cell_cycle_proportions.pdf", sep = ""), graph_cell_cycle_proportions,
+       width = 25, height = 28.5, units = "mm", device = cairo_pdf)
+```
+
+## Plotting proportions of 2N, S, 4N and 8N+ cell cycle groups in cells treated with C-604 only
+```{r}
+data_graph <- data_p21_proportions %>%
+  complete(experiment, cell_line, condition, p21) %>%
+  replace(is.na(.), 0) %>%
+  rename(treatment = condition) %>%
+  arrange(treatment, experiment, p21) %>%
+  group_by(genotype, p21) %>%
+  mutate(x_axis = 1:n()) %>%
+  ungroup() %>%
+  mutate(p21 = factor(p21, levels = c("negative", "positive"), labels = c("p21-", "p21+")),
+         genotype = factor(genotype, levels = c("WT", "p53KO"), labels = c("WT", "p53-null")))
+
+data_stats <- data.frame()
+
+for (t in unique(data_graph$treatment)) {
+  for (c in unique(data_graph$p21)) {
+    for (g in unique(data_graph$genotype)[unique(data_graph$genotype) != "WT"]) {
+      
+      tmp.data <- filter(data_graph,
+                         treatment == t,
+                         p21 == c,
+                         genotype %in% c("WT", g)) %>%
+        
+        dplyr::select(experiment, cell_line, genotype, treatment, p21, prop) %>%
+        spread(key = genotype, value = prop) %>%
+        replace(is.na(.), 0)
+      
+      tmp.stats <- t.test(tmp.data[[6]], tmp.data[[5]],
+                          alternative = "two.sided",
+                          paired = FALSE,
+                          var.equal = TRUE)
+    
+      tmp.results <- data.frame(cell_line = unique(tmp.data$cell_line),
+                                genotype = g,
+                                p21 = c,
+                                treatment = t,
+                                p = tmp.stats$p.value)
+      
+      data_stats <- bind_rows(data_stats, tmp.results)
+    }
+  }
+}
+
+data_stats <- data_stats %>%
+  mutate(significance = case_when(p < 0.001 ~ "***",
+                                  p < 0.01 ~ "**",
+                                  p < 0.05 ~ "*",
+                                  .default = "ns"))
+
+graph_p21_proportions <- ggplot() +
+  
+  geom_bar(data = data_graph,
+           aes(x = x_axis,
+               y = prop,
+               fill = p21,
+               group = p21),
+           stat = "identity", position = "stack",
+           width = 0.95, alpha = 1) +
+  
+  geom_segment(data = data_graph, aes(x = 0.575, xend = 0.575, y = 0, yend = 100),
+               colour = colour_pallette[6], linetype = "solid", linewidth = 0.25) +
+  
+  geom_segment(data = data_graph, aes(x = 3.5, xend = 3.5, y = 0, yend = 100),
+               colour = colour_pallette[6], linetype = "solid", linewidth = 0.25) +
+  
+  geom_segment(data = data_graph, aes(x = 6.425, xend = 6.425, y = 0, yend = 100),
+               colour = colour_pallette[6], linetype = "solid", linewidth = 0.25) +
+
+  geom_hline(yintercept = c(0, 100), colour = colour_pallette[6], linetype = "solid", linewidth = 0.25) +
+  
+  facet_nested(. ~ cell_line + genotype,
+               nest_line = element_line(linetype = 1, linewidth = 0.25),
+               resect = unit(0.04, "in"),
+               strip = strip_nested(clip = "off")) +
+  
+  labs(x = "C-604 (µM)", y = "%") +
+  
+  scale_fill_manual(values = c(colour_pallette[7], colour_pallette[8])) +
+  scale_x_continuous(expand = c(0, 0), breaks = c(2, 5), labels = c(0, 2)) +
+  scale_y_continuous(expand = c(0, 0), limits = c(-1.5, 125), breaks = c(0, 25, 50, 75, 100)) +
+  graph_theme +
+  theme(panel.border = element_blank(),
+        legend.position = "none",
+        legend.justification = "center",
+        legend.key.width = unit(5.5, 'pt'),
+        legend.key.height = unit(4, 'pt'),
+        legend.text = element_text(colour = "#000000", size = 6, margin = margin()),
+        legend.margin = margin(t = 4, l = -10),
+        legend.title = element_blank())
+  
+ggsave(paste(path_results, "graph_p21_proportions.pdf", sep = ""), graph_p21_proportions,
+       width = 25, height = 28.5, units = "mm", device = cairo_pdf)
+```

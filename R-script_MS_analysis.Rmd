@@ -1,0 +1,722 @@
+---
+title: "Mass Spectrometry Analysis"
+output: html_document
+date: "2024-04-26"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Loading Libraries
+```{r message=FALSE, warning=FALSE, paged.print=FALSE}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(ggforce)
+library(ggExtra)
+library(ggvenn)
+library(grid)
+library(gridExtra)
+library(ggridges)
+library(ggbeeswarm)
+library(gghalves)
+library(cowplot)
+library(gplots)
+library(lattice)
+library(ggthemes)
+library(scales)
+library(seqinr)
+library(tidyverse)
+library(Dict)
+library(viridis)
+library(latex2exp)
+library(ggnewscale)
+library(ggh4x)
+library(extrafont)
+library(gtable)
+library(rstatix)
+library(readxl)
+library(org.Hs.eg.db)
+library(AnnotationDbi)
+library(GO.db)
+library(fgsea)
+library(clusterProfiler)
+library(UniProt.ws)
+library(ggseqlogo)
+```
+
+## Establishing paths to data and results folders
+```{r}
+path_data <- ### Path to MS_prometaphase_C-604_vs_DMSO.xlsx
+path_results <- ### Path to an export folder
+```
+
+## Establoshing ggplot theme arguments
+```{r}
+graph_theme <- theme(
+  plot.margin = margin(b = 0.2, l = 0.2, t = 0.2, r = 0.2, unit = "lines"),
+  text = element_text(size = 1, family = "Arial"),
+  panel.spacing.y = unit(0.2, "lines"),
+  panel.spacing.x = unit(0.2, "lines"),
+  panel.border = element_rect(colour = "#000000", fill = NA, linewidth = 0.5),
+  panel.background = element_blank(),
+  panel.grid.major.y = element_blank(),
+  panel.grid.minor.y = element_blank(),
+  panel.grid.major.x = element_blank(),
+  panel.grid.minor.x = element_blank(),
+  strip.background = element_blank(),
+  strip.text.x = element_text(colour = "#000000", size = 6, margin = margin(b = 2, t = 2), vjust = 0),
+  strip.text.y = element_text(colour = "#000000", size = 6, margin = margin(l = 2)),
+  strip.clip = "off",
+  axis.ticks.x = element_line(colour = "#000000", linewidth = 0.25),
+  axis.ticks.y = element_line(colour = "#000000", linewidth = 0.25),
+  axis.ticks.length = unit(0.1, "lines"),
+  axis.title.x = element_text(colour = "#000000", size = 6, margin = margin(t = 3)),
+  axis.title.y = element_text(colour = "#000000", size = 6, margin = margin(r = 2)),
+  axis.text.x = element_text(colour = "#000000", size = 6, margin = margin(t = 2)),
+  axis.text.y = element_text(colour = "#000000", size = 6, margin = margin(r = 2)),
+  plot.title = element_blank(),
+  legend.key = element_rect(fill = "#FFFFFF"),
+  legend.position = "none",
+  legend.justification = "left",
+  legend.key.width = unit(2, 'pt'),
+  legend.key.height = unit(2, 'pt'),
+  legend.text = element_text(colour = "#000000", size = 6, margin = margin(r = 1)),
+  legend.margin = margin(r = 0, b = 0, l = 0, t = 0),
+  legend.title = element_blank())
+```
+
+## Establishing colour pallette
+```{r}
+colour_pallette <- c("#D4D3CF", "#DC6B83", "#75B1CE", "#D8C367", "#526C94", "#000000", "#ccdba2", "#889466", "#c6b2d1", "#654875")
+```
+
+## Importing raw data
+```{r}
+data_raw = data.frame()
+
+tmp_sheets <- excel_sheets(path_data)
+
+for (s in tmp_sheets) {
+  tmp.data <- read_excel(path_data, sheet = s) %>%
+    mutate(dataset = s, FC_log2 = difference.test.vs.control, FC = 2^FC_log2) %>%
+    dplyr::select(dataset, protein, FC, FC_log2,p = pvalues, FDR)
+      
+    data_raw = bind_rows(data_raw, tmp.data) 
+  }
+rm(tmp.data)
+
+head(data_raw)
+```
+## Processing raw data (GWLi vs DMSO)
+```{r}
+data_GWLi_vs_DMSO <- data_raw %>%
+  filter(dataset %in% c("RPE_B55_GWLi_vs_DMSO", "HCC1395_GWLi_vs_DMSO", "HeLa_GWLi_vs_DMSO", "RPE_B55_DIA_GWLi_vs_DMSO")) %>%
+  mutate(cell_line = case_when(dataset %in% c("RPE_B55_GWLi_vs_DMSO") ~ "RPE-1",
+                               dataset %in% c("HCC1395_GWLi_vs_DMSO") ~ "HCC1395",
+                               dataset %in% c("HeLa_GWLi_vs_DMSO") ~ "HeLa",
+                               dataset %in% c("RPE_B55_DIA_GWLi_vs_DMSO") ~ "RPE-1\nB55α-KD"),
+         
+         hit = case_when((FDR < 0.1 & FC_log2 > 0) ~ "positive",
+                         (FDR < 0.1 & FC_log2 < 0) ~ "negative",
+                         .default = "not a hit"),
+         gene = str_split(protein, ";| ")) %>%
+  
+  unnest(gene) %>%
+  filter(gene != "") %>%
+  mutate(gene = str_extract(gene, "^[^\\(]+")) %>%
+  unique()
+
+data_GWLi_vs_DMSO
+```
+
+## Ploting FDR values of hits identified in RPE-1 B55α-KD cells
+```{r}
+data_hits_with_DIA <- filter(data_GWLi_vs_DMSO, cell_line == "RPE-1\nB55α-KD", hit != "not a hit")
+data_hits_with_DIA <- filter(data_GWLi_vs_DMSO, cell_line %in% c("RPE-1", "RPE-1\nB55α-KD"), protein %in% data_hits_with_DIA$protein) %>%
+  mutate(DIA = ifelse(cell_line == "RPE-1", "DIA_wo", "DIA_w"),
+         cell_line = "RPE-1 B55α-dd") %>%
+  dplyr::select(cell_line, DIA, protein, FDR) %>%
+  unique() %>%
+  spread(key = DIA, value = FDR)
+
+graph_GWLi_vs_DMSO_hits_with_DIA <- ggplot() +
+  
+  geom_hline(yintercept = 1, colour = colour_pallette[2], linewidth = 0.35) +
+  geom_vline(xintercept = 1, colour = colour_pallette[2], linewidth = 0.35) +
+  
+  geom_point(data = data_hits_with_DIA,
+             aes(x = -log10(DIA_wo), y = -log10(DIA_w)),
+             shape = 16, size = 1, stroke = 0.35, alpha = 1) +
+
+  scale_x_continuous(expand = c(0.05, 0.05), limits = c(0, 4.1), breaks = c(0, 1, 2, 3, 4)) +
+  scale_y_continuous(expand = c(0.05, 0.05), limits = c(0, 4.1), breaks = c(0, 1, 2, 3, 4)) +
+  scale_colour_manual(values = c(colour_pallette[3], colour_pallette[1], colour_pallette[2])) +
+  scale_fill_manual(values = c(colour_pallette[4], colour_pallette[9])) +
+  scale_shape_manual(values = c(21, 22)) +
+  labs(x = bquote(-log[10]~"FDR (-DIA)"), y = bquote(-log[10]~"FDR (+DIA)")) +
+  facet_nested(. ~ cell_line,
+               nest_line = element_line(linetype = 1, linewidth = 0.25),
+               resect = unit(0.04, "in"),
+               strip = strip_nested(clip = "off")) +
+  
+  graph_theme +
+  theme(plot.title = element_text(colour = "#000000", size = 6, margin = margin(b = 2), hjust = 0.5, family = "Arial"),
+        panel.grid.major.y = element_line(colour = "#e8e8e8", linewidth = 0.25),
+        panel.grid.minor.y = element_blank(),
+        panel.grid.major.x = element_line(colour = "#e8e8e8", linewidth = 0.25),
+        panel.grid.minor.x = element_blank(),
+        legend.position = "right",
+        legend.justification = "top",
+        legend.key.width = unit(4, 'pt'),
+        legend.key.height = unit(5.5, 'pt'),
+        legend.text = element_text(colour = "#000000", size = 6, margin = margin(r = -0.75), family = "Arial"),
+        legend.margin = margin(l = -8, t = 0),
+        legend.spacing.x = unit(1, "pt"),
+        legend.title = element_blank()) +
+  
+  guides(colour = "none")
+
+ggsave(paste(path_results, "graph_GWLi_vs_DMSO_hits_with_DIA.pdf", sep = ""), graph_GWLi_vs_DMSO_hits_with_DIA,
+       width = 22.5, height = 26.5, units = "mm", device = cairo_pdf)
+```
+
+## Ploting FDR values of ENSA, ARPP19, PLEC and MASTL
+```{r}
+list_proteins <- c("ARPP19(S62);ENSA(S67);", "ARPP19(Y59);ENSA(Y64);", "MASTL(T873);MASTL(S878);", "PLEC(S4613);PLEC(S4618);", "PLEC(S4616);PLEC(Y4611);")
+names_proteins <- c("ARPP19(S62)\nENSA(S67)", "ARPP19(Y59)\nENSA(Y64)", "MASTL(T873)\nMASTL(S878)", "PLEC(S4613)\nPLEC(S4618)", "PLEC(S4616)\nPLEC(Y4611)")
+
+data_GWL_targets <- filter(data_GWLi_vs_DMSO, protein %in% list_proteins) %>%
+  dplyr::select(cell_line, protein, FDR, FC, FC_log2) %>%
+  unique() %>%
+  mutate(cell_line = factor(cell_line, levels = unique(cell_line), labels = c("HCC1395", "HeLa", "RPE-1 B55α-dd (-DIA)", "RPE-1 B55α-dd (+DIA)")),
+         protein = factor(protein, levels = list_proteins, labels = names_proteins))
+
+graph_GWLi_vs_DMSO_GWL_targets <- ggplot() +
+  
+  geom_hline(yintercept = 1, colour = colour_pallette[2], linewidth = 0.25) +
+  geom_vline(xintercept = 0, colour = colour_pallette[6], linewidth = 0.25) +
+  
+  geom_point(data = data_GWL_targets,
+             aes(x = FC_log2, y = -log10(FDR), colour = cell_line),
+             shape = 16, size = 1.75, stroke = 0.35, alpha = 1) +
+
+  scale_x_continuous(expand = c(0.05, 0.05), limits = c(-16, 16), breaks = c(-15, -10, -5, 0, 5, 10, 15)) +
+  scale_y_continuous(expand = c(0.05, 0.05), limits = c(0, 4.1), breaks = c(0, 1, 2, 3, 4)) +
+  scale_colour_manual(values = c(colour_pallette[2], colour_pallette[3], colour_pallette[4], colour_pallette[5])) +
+  scale_fill_manual(values = c(colour_pallette[4], colour_pallette[9])) +
+  scale_shape_manual(values = c(21, 22)) +
+  labs(x = bquote(log[2]~"FC (C-604 vs DMSO)"), y = bquote(-log[10]~"FDR")) +
+  facet_nested(. ~ protein,
+               nest_line = element_line(linetype = 1, linewidth = 0.25),
+               resect = unit(0.04, "in"),
+               strip = strip_nested(clip = "off"),
+               axes = "all") +
+  
+  graph_theme +
+  theme(axis.text.x = element_text(colour = "#000000", size = 6, margin = margin(t = 2), angle = -90, hjust = 0, vjust = 0.5, family = "Arial"),
+        plot.title = element_text(colour = "#000000", size = 6, margin = margin(b = 2), hjust = 0.5, family = "Arial"),
+        panel.grid.major.y = element_line(colour = "#e8e8e8", linewidth = 0.25),
+        panel.grid.minor.y = element_blank(),
+        panel.grid.major.x = element_line(colour = "#e8e8e8", linewidth = 0.25),
+        panel.grid.minor.x = element_blank(),
+        legend.position = "right",
+        legend.justification = "top",
+        legend.key = element_blank(),
+        legend.key.width = unit(4, 'pt'),
+        legend.key.height = unit(5.5, 'pt'),
+        legend.text = element_text(colour = "#000000", size = 6, margin = margin(r = -0.75), family = "Arial"),
+        legend.margin = margin(l = -8, t = 0),
+        legend.spacing.x = unit(1, "pt"),
+        legend.title = element_blank()) +
+  
+  guides(colour = guide_legend(frame.colour = FALSE,
+                               frame.linewidth = 0)
+         )
+
+ggsave(paste(path_results, "graph_GWLi_vs_DMSO_GWL_targets.pdf", sep = ""), graph_GWLi_vs_DMSO_GWL_targets,
+       width = 115, height = 30, units = "mm", device = cairo_pdf)
+```
+
+## Establishing numbers of significant negative and positive hits
+```{r}
+data_GWLi_vs_DMSO_hit_count <- data_GWLi_vs_DMSO %>%
+  dplyr::select(-gene) %>%
+  unique() %>%
+  reframe(n = n(), .by = c(cell_line, hit)) %>%
+  filter(hit != "not a hit")
+```
+
+## Plotting volcano plot
+```{r}
+data_graph <- data_GWLi_vs_DMSO %>%
+  mutate(cell_line = factor(cell_line, levels = c("HeLa", "HCC1395", "RPE-1", "RPE-1\nB55α-KD"))) %>%
+  dplyr::select(-gene) %>%
+  unique()
+
+
+graph_GWLi_vs_DMSO_volcano <- ggplot() +
+  
+  geom_point(data = data_graph,
+             aes(x = FC_log2, y = -log10(FDR), colour = hit),
+             shape = 16, size = 0.75, stroke = 0.2, alpha = 0.5) +
+  
+  geom_text(data = filter(data_GWLi_vs_DMSO_hit_count, hit == "positive"), aes(x = 16, y = 3.9, label = n),
+            colour = colour_pallette[2], size = 6/.pt, family = "Arial", hjust = 1) +
+  
+  geom_text(data = filter(data_GWLi_vs_DMSO_hit_count, hit == "negative"), aes(x = -16, y = 3.9, label = n),
+            colour = colour_pallette[3], size = 6/.pt, family = "Arial", hjust = 0) +
+  
+  scale_x_continuous(expand = c(0.05, 0.05), limits = c(-16, 16), breaks = c(-15, -10, -5, 0, 5, 10, 15)) +
+  scale_y_continuous(expand = c(0.05, 0.05), limits = c(0, 4.1), breaks = c(0, 1, 2, 3, 4)) +
+  scale_colour_manual(values = c(colour_pallette[3], colour_pallette[1], colour_pallette[2])) +
+  scale_fill_manual(values = c(colour_pallette[4], colour_pallette[9])) +
+  scale_shape_manual(values = c(21, 22)) +
+  
+  labs(x = bquote(log[2]~"FC (C-604 vs DMSO)"), y = bquote(-log[10]~"FDR")) +
+  facet_nested(. ~ cell_line,
+               nest_line = element_line(linetype = 1, linewidth = 0.25),
+               resect = unit(0.04, "in"),
+               strip = strip_nested(clip = "off")) +
+  
+  graph_theme +
+  theme(axis.text.x = element_text(colour = "#000000", size = 6, margin = margin(t = 2), angle = -90, hjust = 0, vjust = 0.5, family = "Arial"),
+        plot.title = element_text(colour = "#000000", size = 6, margin = margin(b = 2), hjust = 0.5, family = "Arial"),
+        panel.grid.major.y = element_line(colour = "#e8e8e8", linewidth = 0.25),
+        panel.grid.minor.y = element_blank(),
+        panel.grid.major.x = element_line(colour = "#e8e8e8", linewidth = 0.25),
+        panel.grid.minor.x = element_blank(),
+        legend.position = "right",
+        legend.justification = "top",
+        legend.key.width = unit(4, 'pt'),
+        legend.key.height = unit(5.5, 'pt'),
+        legend.text = element_text(colour = "#000000", size = 6, margin = margin(r = -0.75), family = "Arial"),
+        legend.margin = margin(l = -8, t = 0),
+        legend.spacing.x = unit(1, "pt"),
+        legend.title = element_blank()) +
+  
+  guides(colour = "none")
+
+ggsave(paste(path_results, "graph_GWLi_vs_DMSO_volcano.pdf", sep = ""), graph_GWLi_vs_DMSO_volcano,
+       width = 65, height = 30, units = "mm", device = cairo_pdf)
+```
+
+## Plotting counts of positive and negative hits
+```{r}
+graph_data <- data_GWLi_vs_DMSO_hit_count  %>%
+  mutate(cell_line = factor(cell_line, levels = c("HeLa", "HCC1395", "RPE-1", "RPE-1\nB55α-KD"), labels = c("HeLa", "HCC1395", "RPE-1", "RPE-1 B55α-KD")))
+
+graph_hit_counts <- ggplot() +
+  
+  geom_bar(data = graph_data, aes(x = cell_line, y = n, fill = hit),
+           stat = "identity", position = "stack", width = 0.7, alpha = 0.9) +
+  
+  scale_fill_manual(values = c(colour_pallette[3], colour_pallette[2]), labels = c("Down", "Up")) +
+  scale_y_continuous(expand = c(0, 0), limits = c(0, 900), breaks = c(0, 300, 600, 900)) +
+  labs(y = "Hit count") +
+  
+  graph_theme +
+  theme(plot.margin = margin(b = 0.2, l = 0.2, t = 0.2, r = 2, unit = "lines"),
+        panel.border = element_blank(),
+        axis.text.x = element_text(colour = "#000000", size = 6, margin = margin(t = 2), angle = -45, vjust = 0.5, hjust = 0),
+        axis.title.x = element_blank(),
+        plot.title = element_text(colour = "#000000", size = 6, margin = margin(b = 2), hjust = 0.5),
+        axis.line = element_line(colour = "#000000", linewidth = 0.25),
+        legend.position = "top",
+        legend.justification = "center",
+        legend.key=element_blank(),
+        legend.key.width = unit(5.5, 'pt'),
+        legend.key.height = unit(5.5, 'pt'),
+        legend.text = element_text(colour = "#000000", size = 6, margin = margin(l = 1), family = "Arial"),
+        legend.margin = margin(b = -10),
+        legend.spacing.x = unit(1, "pt"),
+        legend.title = element_blank())
+    
+ggsave(paste(path_results, "graph_hit_counts.pdf", sep = ""), graph_hit_counts,
+       width = 32.5, height = 35, units = "mm", device = cairo_pdf)
+```
+
+## Plotting venn diagram
+```{r}
+RPE1_hits <- filter(data_GWLi_vs_DMSO, hit != "not a hit", cell_line == "RPE-1") %>%
+  dplyr::select(cell_line, protein, hit) %>%
+  unique() %>%
+  mutate(cell_line = "RPE1")
+
+HeLa_hits <- filter(data_GWLi_vs_DMSO, hit != "not a hit", cell_line == "HeLa") %>%
+  dplyr::select(cell_line, protein, hit) %>%
+  unique()
+
+HCC1395_hits <- filter(data_GWLi_vs_DMSO, hit != "not a hit", cell_line == "HCC1395") %>%
+  dplyr::select(cell_line, protein, hit) %>%
+  unique()
+
+data_venn <- bind_rows(RPE1_hits, HeLa_hits, HCC1395_hits) %>%
+  group_by(hit) %>%
+  group_split() %>%
+  lapply(complete, cell_line, protein) %>%
+  lapply((function (data) {
+    
+    tmp.label <- unique(data$hit)
+    tmp.label <- tmp.label[!is.na(tmp.label)]
+    data <- mutate(data, hit_group = tmp.label)
+    return(data)
+    
+  })) %>%
+  
+  lapply(mutate, hit = ifelse(is.na(hit), FALSE, TRUE)) %>%
+  lapply(spread, key = cell_line, value = hit) %>%
+  bind_rows()
+
+data_hits_intersection <- data_venn %>%
+  filter(RPE1 == TRUE, HeLa == TRUE, HCC1395 == TRUE)
+  
+graph_venn <- ggplot(data_venn, aes(A = HCC1395, B = RPE1, C = HeLa)) +
+  
+  geom_venn(show_percentage = FALSE,
+            set_names = c("HCC1395", "RPE-1", "HeLa"),
+            fill_color = c(colour_pallette[3], colour_pallette[9], colour_pallette[1]),
+            fill_alpha = 0.2,
+            stroke_color = c(colour_pallette[5], colour_pallette[10], colour_pallette[6]),
+            set_name_color =  c(colour_pallette[5], colour_pallette[10], colour_pallette[6]),
+            set_name_size = 6/.pt,
+            text_size = 6/.pt,
+            stroke_size = 0.25) +
+
+  coord_fixed() +
+  
+  graph_theme +
+  theme(panel.border = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank())
+
+ggsave(paste(path_results, "graph_venn.pdf", sep = ""), graph_venn,
+       width = 32, height = 32, units = "mm", device = cairo_pdf)
+```
+
+## Plotting overlap proportions
+```{r}
+data_venn_overlap <- data_venn %>%
+  mutate(n = HCC1395 + HeLa + RPE1) %>%
+  reframe(count = n(), .by = n) %>%
+  mutate(perc = round(count / sum(count) * 100, 1))
+
+graph_venn_overlap <- ggplot(data = data_venn_overlap, aes(x = count, y = factor(n), fill = factor(n))) +
+  geom_bar(stat = "identity", position = "identity", width = 0.75) +
+  geom_text(aes(x = count + 25, y = n, label = paste(perc, "%", sep = "")), family = "Arial", size = 6/.pt, hjust = 0) +
+  scale_fill_manual(values = c(colour_pallette[1], colour_pallette[4], colour_pallette[2])) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, 1520), breaks = c(0, 400, 800, 1200)) +
+  scale_y_discrete(expand = c(0.2, 0.2)) +
+  labs(x = "Phospho-sites", y = "Datasets") +
+  
+  graph_theme +
+  theme(panel.border = element_blank(),
+        axis.line = element_line(colour = "#000000", linewidth = 0.25))
+
+ggsave(paste(path_results, "graph_venn_common_hits_overlap.pdf", sep = ""), graph_venn_overlap,
+       width = 26, height = 18, units = "mm", device = cairo_pdf)
+```
+
+## Extracting common hits (genes) and establishing GO enrichment
+```{r}
+data_common_hits <- filter(data_venn, HCC1395 == TRUE, HeLa == TRUE, RPE1 == TRUE) %>%
+  dplyr::select(protein) %>%
+  separate_rows(protein, sep = ";") %>%
+  mutate(gene = str_split(protein, ";| ")) %>%
+  unnest(gene) %>%
+  filter(gene != "") %>%
+  mutate(gene = str_extract(gene, "^[^\\(]+")) %>%
+  dplyr::select(gene) %>%
+  unique()
+
+## Gene ontology enrichment analysis
+data_common_hits_GO_enrichment <- data_GWLi_vs_DMSO %>%
+  ((function (data) {
+    
+    tmp.entrez.ids <- bitr(unique(data$gene), 
+                      fromType = "SYMBOL", 
+                      toType = "ENTREZID", 
+                      OrgDb = org.Hs.eg.db)
+    
+    tmp.data <- data_common_hits %>%
+      rename(SYMBOL = gene) %>%
+      merge(tmp.entrez.ids, on = SYMBOL)
+    
+    tmp.genes.bcg <- tmp.entrez.ids$ENTREZID
+    tmp.output <- data.frame()
+    
+    for (o in c("BP")) {
+        
+        tmp.genes <- tmp.data$ENTREZID
+      
+        enriched.go <- enrichGO(gene = tmp.genes, 
+                                OrgDb = org.Hs.eg.db, 
+                                keyType = "ENTREZID", 
+                                ont = o, 
+                                pAdjustMethod = "BH", 
+                                pvalueCutoff = 1, 
+                                qvalueCutoff = 0.1,
+                                minGSSize = 10,
+                                maxGSSize = 500,
+                                universe = tmp.genes.bcg,
+                                readable = TRUE) %>%
+        
+          as.data.frame() %>%
+          mutate(ontology = o)
+
+        tmp.output <- bind_rows(tmp.output, enriched.go)
+      }
+    return(tmp.output)
+  })) %>%
+  bind_rows()
+```
+
+## Plotting FC values of common hits
+```{r}
+list_peptides <- filter(data_venn, HCC1395 == TRUE, HeLa == TRUE, RPE1 == TRUE)$protein
+data_graph <- filter(data_GWLi_vs_DMSO, protein %in% list_peptides,
+                     cell_line %in% c("HCC1395", "HeLa", "RPE-1")) %>%
+  dplyr::select(-gene) %>%
+  unique() %>%
+  group_by(protein) %>%
+  mutate(FC_log2_mean = mean(FC_log2)) %>%
+  ungroup() %>%
+  arrange(FC_log2_mean) %>%
+  mutate(protein = factor(protein, levels = unique(protein)))
+
+graph_common_hits <- ggplot(data_graph, aes(x = protein, y = cell_line, fill = FC_log2)) +
+  geom_tile(colour = "#FFFFFF", linewidth = 0.25) +
+  scale_x_discrete(expand = c(0, 0)) +
+  scale_y_discrete(expand = c(0, 0)) +
+  
+  scale_fill_gradient2(low = colour_pallette[3], mid = "#FFFFFF", high = colour_pallette[2],
+                       midpoint = 0, limits = c(-10, 10), breaks = c(-9, -6, -3, 0, 3, 6, 9),
+                       na.value = colour_pallette[1],
+                       oob = oob_squish) +
+  labs(fill = bquote(log[2]~"FC (C-604 vs DMSO)")) +
+  graph_theme +
+  theme(axis.text.x = element_text(colour = "#000000", size = 6, margin = margin(t = 2), angle = -90, vjust = 0.5, hjust = 0),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        legend.position = "top",
+        legend.justification = "left",
+        legend.key.width = unit(15, 'pt'),
+        legend.key.height = unit(4.5, 'pt'),
+        legend.text = element_text(colour = "#000000", size = 6, margin = margin(t = 2)),
+        legend.margin = margin(b = -10),
+        legend.spacing.x = unit(1, "pt"),
+        legend.title = element_text(colour = "#000000", size = 6, hjust = 0.5, margin = margin(b = 1))) +
+    
+  guides(fill = guide_colorbar(label.position = "bottom",
+                               frame.colour = "#000000",
+                               frame.linewidth = 0.25,
+                               ticks.colour = "#000000",
+                               ticks.linewidth = 0.25,
+                               title.position = "top"))
+
+ggsave(paste(path_results, "Common_hits_heatmap.pdf", sep = ""), graph_common_hits,
+       width = 145, height = 65, units = "mm", device = cairo_pdf)
+```
+
+## Gene ontology enrichment analysis
+```{r}
+data_GO_enrichment <- data_GWLi_vs_DMSO %>%
+  group_by(cell_line) %>%
+  group_split() %>%
+  lapply((function (data) {
+    
+    tmp.entrez.ids <- bitr(unique(data$gene), 
+                      fromType = "SYMBOL", 
+                      toType = "ENTREZID", 
+                      OrgDb = org.Hs.eg.db)
+    
+    tmp.data <- data %>%
+      rename(SYMBOL = gene) %>%
+      merge(tmp.entrez.ids, on = SYMBOL)
+    
+    tmp.genes.bcg <- tmp.data$ENTREZID
+    tmp.output <- data.frame()
+    
+    for (h in c("positive", "negative")) {
+      
+      for (o in c("BP", "CC")) {
+        
+        tmp.genes <- filter(tmp.data, hit == h)$ENTREZID
+      
+        enriched.go <- enrichGO(gene = tmp.genes, 
+                                OrgDb = org.Hs.eg.db, 
+                                keyType = "ENTREZID", 
+                                ont = o, 
+                                pAdjustMethod = "BH", 
+                                pvalueCutoff = 0.05, 
+                                qvalueCutoff = 0.1,
+                                minGSSize = 10,
+                                maxGSSize = 500,
+                                universe = tmp.genes.bcg,
+                                readable = TRUE) %>%
+        
+          as.data.frame() %>%
+          mutate(cell_line = unique(data$cell_line), hit = h, ontology = o)
+
+        tmp.output <- bind_rows(tmp.output, enriched.go)
+      }
+    }
+    return(tmp.output)
+  })) %>%
+  bind_rows()
+```
+## Manually filtering terms to reduce redundancy
+```{r}
+data_GO_enrichment_curated <- bind_rows(
+  
+  data.frame(cell_line = "HeLa",
+             ontology = "BP",
+             ID = c("GO:0140014", "GO:0000070", "GO:0048285", "GO:0007059", "GO:1903047",
+                    "GO:0050000", "GO:0051310", "GO:0008608", "GO:0044784", "GO:0071173",
+                    "GO:0007163", "GO:0016071", "GO:0006606", "GO:0051653")),
+  
+  data.frame(cell_line = "HeLa",
+             ontology = "CC",
+             ID = c("GO:0005819", "GO:0099513", "GO:0000793", "GO:0000776", "GO:0005874",
+                      "GO:0051233", "GO:0005938", "GO:0015629", "GO:0016604", "GO:0005635",
+                      "GO:0005643", "GO:0005875", "GO:0099081")),
+  
+  data.frame(cell_line = "RPE-1",
+             ontology = "BP",
+             ID = c("GO:0016071", "GO:0006606", "GO:0007088", "GO:1901978", "GO:0030029")),
+  
+  data.frame(cell_line = "RPE-1",
+             ontology = "CC",
+             ID = c("GO:0099513", "GO:0015629", "GO:0005643", "GO:0016604", "GO:0005882",
+                      "GO:0005874", "GO:0035770"))) %>%
+  
+  merge(data_GO_enrichment, on = ID)
+
+data_GO_enrichment_curated
+```
+
+## Plotting curated GO terms
+```{r}
+data_graph <- data_GO_enrichment_curated %>%
+  filter(cell_line != "RPE-1\nB55α-KD") %>%
+  separate(GeneRatio, into = c("n", "total_n"), remove = FALSE, sep = "/") %>%
+  mutate(n = as.numeric(n), total_n = as.numeric(total_n), ratio = n / total_n) %>%
+  group_by(cell_line, ontology) %>%
+  group_split() %>%
+  lapply(arrange, ratio) %>%
+  lapply(mutate, rank = letters[1:n()]) %>%
+  bind_rows()
+
+graph_GO_enrichment <- ggplot(data = data_graph, aes(x = ratio, y = paste(rank, ". ", Description, sep = ""), size = Count, fill = qvalue)) +
+  
+  geom_point(shape = 21, colour = "#FFFFFF") +
+  
+  scale_fill_gradient2(low = colour_pallette[2], mid = colour_pallette[4], high = colour_pallette[3],
+                       midpoint = 0.025, limits = c(0, 0.05),
+                       breaks = c(0, 0.025, 0.05),
+                       na.value = colour_pallette[1],
+                       oob = oob_squish) +
+  
+  scale_x_continuous(breaks = c(0, 0.1, 0.2), limits = c(0, 0.205)) +
+  scale_size_continuous(range = c(0.5, 4)) +
+  
+  facet_grid(cell_line + ontology ~ ., scales = "free", space = "free", axes = "all_x") +
+  graph_theme +
+  theme(axis.title.y = element_blank(),
+        panel.grid.major.y = element_line(colour = "#e8e8e8", linewidth = 0.25),
+        legend.position = "top",
+        legend.justification = "left",
+        legend.key.width = unit(10, 'pt'),
+        legend.key.height = unit(4.5, 'pt'),
+        legend.text = element_text(colour = "#000000", size = 6, margin = margin(t = 2)),
+        legend.margin = margin(b = -10, l = -75),
+        legend.spacing.x = unit(75, "pt"),
+        legend.title = element_text(colour = "#000000", size = 6, hjust = 0.5, margin = margin(b = 1))) +
+  
+  guides(fill = guide_colorbar(label.position = "bottom",
+                               frame.colour = "#000000",
+                               frame.linewidth = 0.25,
+                               ticks.colour = "#000000",
+                               ticks.linewidth = 0.25,
+                               title.position = "top"),
+         
+         size = guide_legend(title.position = "top",
+                             frame.colour = FALSE,
+                             frame.linewidth = 0)
+         )
+        
+ggsave(paste(path_results, "GO_enrichment.pdf", sep = ""), graph_GO_enrichment,
+       width = 65, height = 115, units = "mm", device = cairo_pdf)
+```
+
+### Extracting sequences around identified phosphorylation sites
+```{r}
+### Translating gene symbols to entrez ids
+gene_ids <- bitr(unique(data_GWLi_vs_DMSO$gene), 
+                 fromType = "SYMBOL", 
+                 toType = "ENTREZID", 
+                 OrgDb = org.Hs.eg.db)
+
+### Initialise UniProt.ws object, for human (taxId = 9606)
+up <- UniProt.ws(taxId = 9606)
+
+### Query UniProt for the sequences
+sequences <- UniProt.ws::select(up, keys = gene_ids$ENTREZID, columns = c("SEQUENCE"), keytype = "GeneID") %>%
+  dplyr::rename(ENTREZID = From)
+
+### Creating a data frame containing all the protein sequences (126,524)
+data_sequences <- data_GWLi_vs_DMSO %>%
+  dplyr::select(cell_line, hit, gene, protein) %>%
+  dplyr::rename(SYMBOL = gene) %>%
+  merge(gene_ids, on = SYMBOL) %>%
+  separate_rows(protein, sep = ";") %>%
+  filter(protein != "") %>%
+  dplyr::select(cell_line, hit, SYMBOL, ENTREZID, protein) %>%
+  mutate(residue = sub(".*\\(([^)]+)\\).*", "\\1", protein),
+         amino_acid = substring(residue, 1, 1),
+         position = as.numeric(substring(residue, 2, nchar(residue)))) %>%
+  merge(sequences, on = ENTREZID) %>%
+  mutate(amino_acid_match = substring(Sequence, position, position)) %>%
+  filter(amino_acid == amino_acid_match) %>%
+  group_by(cell_line, hit, SYMBOL, ENTREZID, protein) %>%
+  filter(nchar(Sequence) == max(nchar(Sequence))) %>%
+  ungroup() %>%
+  dplyr::select(- Entry) %>%
+  unique() %>%
+  mutate(segment = substring(Sequence, position - 4, position + 4)) %>%
+  filter(nchar(segment) == 9)
+```
+
+## Plotting sequence motif logos
+```{r}
+### Select "not a hit", "positive" or "negative"
+tmp_effect <- "positive"
+
+custom_col_scheme <- make_col_scheme(
+    
+  chars = c('A', 'C', 'D', 'E', 'F', 'G', 'H', 'I',
+            'K', 'L', 'M', 'N', 'P', 'Q', 'R', 'S',
+            'T', 'V', 'W', 'Y'),
+  
+  cols = c(colour_pallette[1], colour_pallette[1], colour_pallette[1], colour_pallette[1], colour_pallette[1], colour_pallette[1], colour_pallette[1], colour_pallette[1], 
+           colour_pallette[1], colour_pallette[1], colour_pallette[1], colour_pallette[1], colour_pallette[2], colour_pallette[1], colour_pallette[1], colour_pallette[3], 
+           colour_pallette[5], colour_pallette[1], colour_pallette[1], colour_pallette[1])
+)
+
+
+graph_RPE1_down <- ggseqlogo(filter(data_sequences, cell_line == "RPE-1", hit == tmp_effect)$segment, method = "prob",
+                             font = "helvetica_regular", col_scheme = custom_col_scheme)
+graph_HeLa_down <- ggseqlogo(filter(data_sequences, cell_line == "HeLa", hit == tmp_effect)$segment, method = "prob",
+                             font = "helvetica_regular", col_scheme = custom_col_scheme)
+graph_HCC1395_down <- ggseqlogo(filter(data_sequences, cell_line == "HCC1395", hit == tmp_effect)$segment, method = "prob",
+                                font = "helvetica_regular", col_scheme = custom_col_scheme)
+
+graph_composite <- plot_grid(graph_RPE1_down, graph_HeLa_down, graph_HCC1395_down,
+                             ncol = 1)
+
+ggsave(paste(path_results, "sequence_motif_logo_", tmp_effect, ".pdf", sep = ""), graph_composite,
+       width = 50, height = 100, units = "mm", device = cairo_pdf)
+```

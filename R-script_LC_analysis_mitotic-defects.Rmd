@@ -1,0 +1,380 @@
+---
+title: "Live Cell Imaging Analysis"
+output: html_document
+date: "2023-11-22"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Loading Libraries
+```{r message=FALSE, warning=FALSE, paged.print=FALSE}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(ggforce)
+library(ggExtra)
+library(grid)
+library(gridExtra)
+library(ggridges)
+library(ggbeeswarm)
+library(gghalves)
+library(cowplot)
+library(gplots)
+library(lattice)
+library(ggthemes)
+library(scales)
+library(seqinr)
+library(tidyverse)
+library(Dict)
+library(zoo)
+library(emdbook)
+library(PupillometryR)
+library(lemon)
+library(embed)
+library(fpc)
+library(dbscan)
+library(viridis)
+library(latex2exp)
+library(ggnewscale)
+library(ggh4x)
+library(extrafont)
+library(gtable)
+library(readxl)
+library(drc)
+library(modelr)
+```
+
+## Establoshing ggplot theme arguments
+```{r}
+graph_theme <- theme(
+  plot.margin = margin(b = 0.2, l = 0.2, t = 0.2, r = 0.2, unit = "lines"),
+  text = element_text(size = 1),
+  panel.spacing.y = unit(0.1, "lines"),
+  panel.spacing.x = unit(0.1, "lines"),
+  panel.border = element_rect(colour = "#000000", fill = NA, linewidth = 0.35),
+  panel.background = element_blank(),
+  panel.grid.major.y = element_blank(),
+  panel.grid.minor.y = element_blank(),
+  panel.grid.major.x = element_blank(),
+  panel.grid.minor.x = element_blank(),
+  strip.background = element_blank(),
+  strip.text.x = element_text(colour = "#000000", size = 6, margin = margin(b = 2, t = 2)),
+  strip.text.y = element_text(colour = "#000000", size = 6, margin = margin(l = 2)),
+  strip.clip = "off",
+  axis.ticks.x = element_line(colour = "#000000", linewidth = 0.25),
+  axis.ticks.y = element_line(colour = "#000000", linewidth = 0.25),
+  axis.ticks.length = unit(0.1, "lines"),
+  axis.title.x = element_text(colour = "#000000", size = 6, margin = margin(t = 2)),
+  axis.title.y = element_text(colour = "#000000", size = 6, margin = margin(r = 2)),
+  axis.text.x = element_text(colour = "#000000", size = 6, margin = margin(t = 2)),
+  axis.text.y = element_text(colour = "#000000", size = 6, margin = margin(r = 2)),
+  plot.title = element_blank(),
+  legend.key = element_rect(fill = "#FFFFFF"),
+  legend.position = "none",
+  legend.justification = "left",
+  legend.key.width = unit(2, 'pt'),
+  legend.key.height = unit(2, 'pt'),
+  legend.text = element_text(colour = "#000000", size = 5, margin = margin(r = 1)),
+  legend.margin = margin(r = 0, b = 0, l = 0, t = 0),
+  legend.title = element_blank())
+```
+
+## Establishing colour pallette
+```{r}
+colour_pallette <- c("#D4D3CF", "#DC6B83", "#75B1CE", "#D8C367", "#526C94", "#000000", "#ccdba2", "#889466", "#c6b2d1", "#654875")
+```
+
+## Establishing paths to data and results folders
+```{r}
+path_data <- ### Path to LC_mitotic_defects.xlsx
+path_data_euclidean <- ### Path to IF_C-604_euclidean_distance.csv
+path_results <- ### Path to an export folder
+```
+
+## Importing IF C-604 response data
+```{r}
+data_euclidean_distance <- read_csv(path_data_euclidean, show_col_types = FALSE)
+data_euclidean_distance_summary <- reframe(data_euclidean_distance, dist_mean = mean(dist), dist_sd = sd(dist), .by = c(cell_line, treatment))
+
+head(data_euclidean_distance_summary)
+```
+
+## Importing data
+```{r}
+tmp_sheets <- excel_sheets(path_data)
+data_raw <- data.frame()
+
+for (s in tmp_sheets) {
+  data_raw <- bind_rows(data_raw, read_excel(path_data, sheet = s))
+}
+
+data_raw
+```
+## Processing data
+```{r}
+data_failed_cytokinesis <- data_raw %>%
+  dplyr::select(- note) %>%
+  reframe(n = n(), .by = c(experiment, cell_line, C604, outcome)) %>%
+  spread(key = outcome, value = n) %>%
+  replace(is.na(.), 0) %>%
+  mutate(prop = defect / (defect + normal))
+
+data_failed_cytokinesis_summary <- data_failed_cytokinesis %>%
+  reframe(prop_mean = mean(prop),
+          prop_sd = sd(prop),
+          .by = c(cell_line, C604))
+
+data_failed_cytokinesis
+data_failed_cytokinesis_summary
+```
+## Plotting proportions of defective mitotic events
+```{r}
+list_cell_lines <- c("HCC1395", "U2OS", "MM231", "RPE-1", "HeLa", "BT-549")
+
+data_graph <- data_failed_cytokinesis_summary %>%
+  mutate(cell_line = factor(cell_line, levels = list_cell_lines),
+         C604 = factor(C604, levels = c(0, 0.25, 0.5, 1, 2)))
+
+data_graph_points <- data_failed_cytokinesis %>%
+  mutate(cell_line = factor(cell_line, levels = list_cell_lines),
+         C604 = factor(C604, levels = c(0, 0.25, 0.5, 1, 2)))
+
+graph_mitotic_defects <- ggplot() +
+  
+  geom_bar(data = data_graph, aes(x = C604, y = prop_mean),
+           stat = "identity", position = "identity",
+           colour = colour_pallette[6], fill = colour_pallette[9],
+           width = 0.7, linewidth = 0.25) +
+  
+  geom_errorbar(data = data_graph, aes(x = C604, ymin = prop_mean, ymax = prop_mean + prop_sd),
+                linewidth = 0.25, width = 0.5) +
+  
+  geom_point(data = data_graph_points, aes(x = C604, y = prop, group = experiment),
+           colour = colour_pallette[6], fill = "#FFFFFF",
+           size = 0.85, stroke = 0.35, shape = 21,
+           position = position_dodge(0.75)) +
+  
+  facet_grid(. ~ cell_line) +
+  labs(x = "C-604 (µM)", y = "Defective\nmitosis") +
+  scale_y_continuous(expand = c(0, 0),limits = c(0, 1.1), breaks = c(0, 0.25, 0.5, 0.75, 1), labels = scales::percent_format(accuracy = 1)) +
+  graph_theme +
+  theme(axis.text.x = element_text(colour = "#000000", size = 6, margin = margin(t = 2), angle = -90, vjust = 0.5, hjust = 0),
+        panel.grid.major.y = element_line(colour = "#D4D3CF", linewidth = 0.15),
+        panel.grid.minor.y = element_blank(),
+        panel.grid.major.x = element_line(colour = "#D4D3CF", linewidth = 0.15),
+        panel.grid.minor.x = element_blank())
+  
+ggsave(paste(path_results, "graph_defective_mitosis.pdf", sep = ""), graph_mitotic_defects,
+       width = 72.5, height = 20, units = "mm", device = cairo_pdf)
+```
+
+## Plotting mitotic timing
+```{r}
+list_cell_lines <- c("HCC1395", "U2OS", "MM231", "RPE-1", "HeLa", "BT-549")
+
+data_graph <- data_raw %>%
+  reframe(timing_median = median(timing),
+          .by = c(experiment, cell_line, C604)) %>%
+  mutate(cell_line = factor(cell_line, levels = list_cell_lines),
+         C604 = factor(C604, levels = c(0, 0.25, 0.5, 1, 2)))
+
+data_graph_points <- data_raw %>%
+  mutate(cell_line = factor(cell_line, levels = list_cell_lines),
+         C604 = factor(C604, levels = c(0, 0.25, 0.5, 1, 2)))
+
+data_graph_p <- data_graph %>%
+  group_by(cell_line) %>%
+  group_split() %>%
+  lapply((function (data) {
+    
+    tmp.control <- filter(data, C604 == 0)
+    tmp.data <- filter(data, C604 != 0) %>%
+      group_by(C604) %>%
+      group_split() %>%
+      lapply((function (data_2) {
+        
+        tmp.p <- t.test(tmp.control$timing_median, data_2$timing_median, var.equal = TRUE)[3][[1]]
+        tmp.output <- data.frame(cell_line = unique(data_2$cell_line),
+                                 C604 = unique(data_2$C604),
+                                 p = tmp.p)
+        return(tmp.output)
+        print(tmp.output)
+        }))
+    
+  })) %>%
+  bind_rows() %>%
+  mutate(label = case_when(p >= 0.05 ~ "ns",
+                           p < 0.05 & p >= 0.01 ~ "*",
+                           p < 0.01 & p >= 0.001 ~ "**",
+                           p < 0.001 ~ "***")) %>%
+  filter(p < 0.05)
+
+graph_mitotic_timing <- ggplot() +
+
+  geom_quasirandom(data = data_graph_points, aes(x = C604, y = timing, group = experiment),
+                   colour = colour_pallette[9],
+                   size = 0.5, shape = 16, alpha = 1) +
+  
+  geom_point(data = data_graph, aes(x = C604, y = timing_median, group = experiment),
+           colour = colour_pallette[6], fill = "#FFFFFF",
+           size = 0.85, stroke = 0.3, shape = 21,
+           position = position_dodge(0.75)) +
+  
+  geom_text(data = data_graph_p, aes(x = C604, y = 1750, label = label), size = 2.11, family = "Arial") +
+  
+  facet_grid(. ~ cell_line) +
+  labs(x = "C-604 (µM)", y = "Mitotic timing\n(min)") +
+  scale_y_continuous(expand = c(0, 0), trans = "log2", breaks = c(20, 80, 320, 1280), limits = c(12, 4000)) +
+  graph_theme +
+  theme(axis.text.x = element_text(colour = "#000000", size = 6, margin = margin(t = 2), angle = -90, vjust = 0.5, hjust = 0),
+        panel.grid.major.y = element_line(colour = "#D4D3CF", linewidth = 0.15),
+        panel.grid.minor.y = element_blank(),
+        panel.grid.major.x = element_line(colour = "#D4D3CF", linewidth = 0.15),
+        panel.grid.minor.x = element_blank())
+  
+ggsave(paste(path_results, "graph_mitotic_timing.pdf", sep = ""), graph_mitotic_timing,
+       width = 72.5, height = 22.5, units = "mm", device = cairo_pdf)
+```
+
+## Plotting a correlation scatterplot of frequencies of mitotic exit defects and long-term cellular responses to C-604 (Euclidean distances)
+```{r}
+data_graph <- data_failed_cytokinesis_summary %>%
+  rename(treatment = C604) %>%
+  merge(data_euclidean_distance_summary, on = c(cell_line, treatment)) %>%
+  mutate(cell_line = factor(cell_line, levels = c("HCC1395", "U2OS", "MM231", "RPE-1", "HeLa", "BT-549")))
+
+data_corr <- data_graph %>%
+  group_by(cell_line) %>%
+  group_split() %>%
+  lapply((function (data) {
+
+    tmp.pearson <- cor.test(data$prop_mean, data$dist_mean, method = "pearson")
+    tmp.lm <- lm(data$prop_mean ~ data$dist_mean)
+    tmp.output <- data.frame(cell_line = unique(data$cell_line),
+                             pearson = round(tmp.pearson$estimate, 3),
+                             pearson_p = tmp.pearson$p.value,
+                             lm_R_squared = summary(tmp.lm)$r.squared)
+    
+    return(tmp.output)
+    
+  })) %>%
+  bind_rows()
+
+
+pearson <- cor.test(data_graph$prop_mean, data_graph$dist_mean, method = "pearson")
+
+graph_corr_distance_defects <- ggplot(data = data_graph) +
+  
+  geom_point(aes(x = dist_mean, y = prop_mean), size = 2, stroke = 0.25, shape = 21, colour = "#FFFFFF", fill = colour_pallette[10]) +
+  geom_text(data = data_corr, aes(x = 90, y = 0.05, label = pearson), family = "Arial", size = 6/.pt, hjust = 1, colour = colour_pallette[10]) +
+  
+  scale_x_continuous(expand = c(0.05, 0.05), limits = c(0, 90), breaks = c(0, 20, 40, 60, 80)) +
+  scale_y_continuous(expand = c(0.05, 0.05),limits = c(0, 1.05), breaks = c(0, 0.25, 0.5, 0.75, 1), labels = scales::percent_format(accuracy = 1)) +
+  labs(x = "Euclidean distance of cellular responses to C-604", y = "Defective\nmitotic exit") +
+  
+  facet_grid(. ~ cell_line) +
+  graph_theme +
+  theme(axis.text.x = element_text(colour = "#000000", size = 6, margin = margin(t = 2), angle = -90, hjust = 0, vjust = 0.5, family = "Arial"))
+  
+ggsave(paste(path_results, "graph_corr_distance_defects.pdf", sep = ""), graph_corr_distance_defects,
+       width = 80, height = 22.5, units = "mm", device = cairo_pdf)
+```
+
+## Plotting a correlation scatterplot of frequencies of mitotic exit defects and mitotic timing
+```{r}
+data_graph <- data_raw %>%
+  mutate(cell_line = factor(cell_line, levels = c("HCC1395", "U2OS", "MM231", "RPE-1", "HeLa", "BT-549")),
+         treatment = factor(C604, levels = c(0, 0.25, 0.5, 1, 2)))
+
+data_graph_summary <- data_graph %>%
+  reframe(timing_median = median(timing), .by = c(experiment, cell_line, treatment, outcome))
+
+data_stats <- data_graph_summary %>%
+  group_by(cell_line, treatment) %>%
+  group_split() %>%
+  lapply((function (data) {
+    
+    tmp.normal <- filter(data, outcome == "normal")$timing_median
+    tmp.defect <- filter(data, outcome == "defect")$timing_median
+    
+    if (length(tmp.normal) == length(tmp.defect)) {
+      
+      tmp.stats <- t.test(tmp.normal, tmp.defect,
+                          alternative = "two.sided",
+                          paired = FALSE,
+                          var.equal = TRUE)
+      
+      tmp.outcome <- data.frame(cell_line = unique(data$cell_line),
+                                treatment = unique(data$treatment),
+                                p = tmp.stats$p.value)
+      
+    } else {
+
+      tmp.outcome <- data.frame(cell_line = unique(data$cell_line),
+                                treatment = unique(data$treatment),
+                                p = NA)      
+      
+      
+    }
+    return(tmp.outcome)
+    
+  })) %>%
+  bind_rows() %>%
+  mutate(significance = case_when(p < 0.001 ~ "***",
+                                  p < 0.01 ~ "**",
+                                  p < 0.05 ~ "*",
+                                  is.na(p) ~ "nd",
+                                  .default = "ns"))
+
+graph_timing_defects <- ggplot(data = data_graph) +
+  
+  geom_point(aes(x = treatment, y = timing, group = outcome, fill = outcome),
+             size = 1, shape = 21, alpha = 0.25, stroke = NA,
+             position = position_jitterdodge(0.25)) +
+  
+  geom_point(data = data_graph_summary, aes(x = treatment, y = timing_median, group = outcome, colour = outcome),
+             fill = "#FFFFFF",
+             size = 0.5, stroke = 0.3, shape = 21,
+             position = position_jitterdodge(0.25)) +
+  
+  geom_text(data = filter(data_stats, significance %in% c("ns")), aes(x = treatment, y = 2500, label = significance),
+            family = "Arial", size = 5/.pt, colour = colour_pallette[2]) +
+  
+  geom_text(data = filter(data_stats, significance %in% c("nd")), aes(x = treatment, y = 2500, label = significance),
+            family = "Arial", size = 5/.pt, colour = colour_pallette[1]) +
+  
+  geom_text(data = filter(data_stats, !(significance %in% c("nd", "ns"))), aes(x = treatment, y = 1850, label = significance),
+            family = "Arial", size = 6/.pt, colour = colour_pallette[6]) +
+  
+  scale_fill_manual(values = c(colour_pallette[3], colour_pallette[1])) +  
+  scale_colour_manual(values = c(colour_pallette[5], colour_pallette[6])) +
+  scale_y_continuous(expand = c(0, 0), trans = "log2", breaks = c(20, 80, 320, 1280), limits = c(18, 4000)) +
+  labs(x = "GWL inhibitor C-604 (µM)", y = "Timing (min)") +
+  
+  facet_grid(. ~ cell_line) +
+  graph_theme +
+  theme(axis.text.x = element_text(colour = "#000000", size = 6, margin = margin(t = 2), angle = -90, hjust = 0, vjust = 0.5, family = "Arial"))
+  
+ggsave(paste(path_results, "graph_timing_defects.pdf", sep = ""), graph_timing_defects,
+       width = 80, height = 22.5, units = "mm", device = cairo_pdf)
+```
+
+## Creating a composite graph
+```{r}
+graph_composite <- plot_grid(graph_mitotic_defects,
+                             graph_mitotic_timing,
+                             graph_corr_distance_defects,
+                             nrow = 3, ncol = 1, align = "h")
+
+ggsave(paste(path_results, "graph_composite.pdf", sep = ""), graph_composite,
+       width = 72.5, height = 75, units = "mm", device = cairo_pdf)
+```
+
+
+
+
+
+
+

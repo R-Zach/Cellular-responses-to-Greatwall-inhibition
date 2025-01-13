@@ -1,0 +1,341 @@
+---
+title: "GWL inhibition (EC50 Western Blots)"
+output: html_document
+date: "2023-09-20"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Loading Libraries
+```{r message=FALSE, warning=FALSE, paged.print=FALSE}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(ggforce)
+library(ggExtra)
+library(ggtext)
+library(grid)
+library(gridExtra)
+library(ggridges)
+library(ggbeeswarm)
+library(gghalves)
+library(cowplot)
+library(gplots)
+library(lattice)
+library(ggthemes)
+library(scales)
+library(seqinr)
+library(tidyverse)
+library(Dict)
+library(zoo)
+library(emdbook)
+library(PupillometryR)
+library(lemon)
+library(embed)
+library(fpc)
+library(dbscan)
+library(viridis)
+library(latex2exp)
+library(ggnewscale)
+library(ggh4x)
+library(extrafont)
+library(readxl)
+library(drc)
+library(modelr)
+```
+
+## Establishing ggplot theme arguments
+```{r}
+graph_theme <- theme(
+  plot.margin = margin(b = 0.2, l = 0.2, t = 0.2, r = 0.2, unit = "lines"),
+  text = element_text(size = 1, family = "Arial"),
+  panel.spacing.y = unit(0.54, "mm"),
+  panel.spacing.x = unit(0.54, "mm"),
+  panel.border = element_rect(colour = "#000000", fill = NA, linewidth = 0.5),
+  panel.background = element_blank(),
+  panel.grid.major.y = element_blank(),
+  panel.grid.minor.y = element_blank(),
+  panel.grid.major.x = element_blank(),
+  panel.grid.minor.x = element_blank(),
+  strip.background = element_blank(),
+  strip.text.x = element_text(colour = "#000000", size = 6, margin = margin(b = 2, t = 2), family = "Arial"),
+  strip.text.y = element_text(colour = "#000000", size = 6, margin = margin(l = 2), family = "Arial"),
+  strip.clip = "off",
+  axis.ticks.x = element_line(colour = "#000000", linewidth = 0.35),
+  axis.ticks.y = element_line(colour = "#000000", linewidth = 0.35),
+  axis.ticks.length = unit(0.1, "lines"),
+  axis.title.x = element_text(colour = "#000000", size = 6, margin = margin(t = 3), family = "Arial"),
+  axis.title.y = element_text(colour = "#000000", size = 6, margin = margin(r = 2), family = "Arial"),
+  axis.text.x = element_text(colour = "#000000", size = 6, margin = margin(t = 2), family = "Arial"),
+  axis.text.y = element_text(colour = "#000000", size = 6, margin = margin(r = 2), family = "Arial"),
+  plot.title = element_blank(),
+  legend.key = element_rect(fill = "#FFFFFF"),
+  legend.position = "none",
+  legend.justification = "left",
+  legend.key.width = unit(2, 'pt'),
+  legend.key.height = unit(2, 'pt'),
+  legend.text = element_text(colour = "#000000", size = 6, margin = margin(r = 1), family = "Arial"),
+  legend.margin = margin(r = 0, b = 0, l = 0, t = 0),
+  legend.title = element_blank())
+```
+
+## Establishing colour pallette
+```{r}
+colour_pallette <- c("#D4D3CF", "#DC6B83", "#75B1CE", "#D8C367", "#526C94", "#000000", "#ccdba2", "#889466")
+```
+
+## Establishing paths to data and results folders
+```{r}
+path_data <- ### Path to WB_C-604_ENSA-P_effect.xlsx
+path_results <- ### Path to an export folder
+```
+
+## Importing data
+```{r}
+data_raw <- read_excel(paste(path_data, "Quantification.xlsx", sep = ""), sheet = "Quantification") %>%
+  mutate(ratio = .[[4]] / .[[5]]) %>%
+  group_by(experiment, cell_line) %>%
+  mutate(ratio_norm = ratio / max(ratio),
+         treatment = condition,
+         treatment = ifelse(treatment == "async", 0, treatment),
+         treatment = as.numeric(treatment),
+         condition = ifelse(condition == "async", "DMSO", "STLC")) %>%
+  ungroup()
+
+data_raw
+```
+
+## Establishing EC50 values
+```{r}
+drm.func <- function (x) {
+  drm(ratio_norm ~ treatment, 
+      fct = LL.4(),
+      data = x,
+      robust = "median"
+      )
+}
+
+coefs.fun <- function (x) {coef(x) %>% tidy}
+graphs.fun <- function (x) {plot(x)[1:2]}
+
+data_ENSAP_models <- data_raw %>%
+  filter(condition == "STLC") %>%
+  group_by(cell_line, experiment) %>%
+  nest() %>%
+  mutate(dr_model = map(data, drm.func),
+         coefs = map(dr_model, coefs.fun),
+         graphs = map(dr_model, graphs.fun))
+
+data_ENSAP_EC_values <- data_ENSAP_models %>%
+  group_by(cell_line, experiment) %>%
+  group_split() %>%
+  lapply((function(data, EC_values = c(50)) {
+    tmp.cell.line <- data$cell_line
+    tmp.experiment <- data$experiment
+    tmp.model <- data$dr_model[[1]]
+    tmp.output <- ED(tmp.model, respLev = EC_values, type = "relative") %>%
+      data.frame() %>%
+      mutate(experiment = tmp.experiment, cell_line = tmp.cell.line) %>%
+      rownames_to_column("EC") %>%
+      mutate(EC = EC_values)
+    return(tmp.output)
+  })) %>%
+  bind_rows() %>%
+  reframe(EC50_mean = mean(Estimate), EC50_sd = sd(Estimate), .by = c(cell_line)) %>%
+  arrange(desc(EC50_mean))
+
+data_ENSAP_coefficients <- data_ENSAP_models %>%
+  dplyr::select(cell_line, coefs) %>%
+  unnest(coefs) %>%
+  mutate(names = case_when(names == "b:(Intercept)" ~ "slope",
+                           names == "c:(Intercept)" ~ "lower limit",
+                           names == "d:(Intercept)" ~ "upper limit",
+                           names == "e:(Intercept)" ~ "EC50")) %>%
+  spread(key = names, value = x) %>%
+  arrange(desc(EC50)) %>%
+  ungroup()
+
+data_ENSAP_models_graphs <- data_ENSAP_models %>%
+  group_by(cell_line, experiment) %>%
+  group_split() %>%
+  lapply((function(data) {
+    
+    tmp.cell.line <- data$cell_line
+    tmp.experiment <- data$experiment
+    tmp.model <- data[[1, "graphs"]][[1]] %>%
+      mutate(experiment = tmp.experiment, cell_line = tmp.cell.line) %>%
+      dplyr::select(experiment, cell_line, treatment, ratio_norm = "1")
+    
+    return(tmp.model)
+
+  })) %>%
+  bind_rows() %>%
+  reframe(ratio_norm_mean = mean(ratio_norm), ratio_norm_sd = sd(ratio_norm), .by = c(cell_line, treatment))
+
+write.csv(data_ENSAP_EC_values, paste(path_data, "ENSA-P_EC50_data.csv"), row.names = FALSE)
+
+data_ENSAP_EC_values
+data_ENSAP_coefficients
+```
+
+## Plotting ENSA-P ratio (HCC1395, U2OS, RPE-1, HeLa)
+```{r}
+list_cell_line = c("HCC1395", "U2OS", "RPE-1", "HeLa")
+
+data_graph_ENSAP <- data_raw %>%
+  filter(cell_line %in% list_cell_line,
+         treatment %in% c(0, 0.125, 0.25, 0.5, 1, 2, 4)) %>%
+  mutate(cell_line = factor(cell_line, levels = list_cell_line))
+
+data_graph_models <- data_ENSAP_models_graphs %>%
+  mutate(cell_line = factor(cell_line, levels = list_cell_line))
+
+data_graph_EC50 <- data_ENSAP_EC_values %>%
+  mutate(cell_line = factor(cell_line, levels = list_cell_line))
+  
+graph_ENSAP <- ggplot(data_graph_ENSAP) +
+  
+  geom_ribbon(data = data_graph_models,
+              aes(x = treatment, ymin = ratio_norm_mean - ratio_norm_sd, ymax = ratio_norm_mean + ratio_norm_sd),
+              fill = colour_pallette[2], alpha = 0.25) +
+
+  geom_line(data = data_graph_models,
+            aes(x = treatment, y = ratio_norm_mean),
+            linewidth = 0.5, colour = colour_pallette[2]) +
+  
+  geom_point(data = data_graph_ENSAP,
+             aes(x = treatment, y = ratio_norm, fill = condition, shape = factor(experiment)),
+             size = 1.75, stroke = 0.25, colour = "#FFFFFF") +
+  
+  geom_text(data = data_graph_EC50, aes(x = 3.9, y = 1, label = paste(round(EC50_mean, 2), round(EC50_sd, 2), sep = " ± ")),
+            size = 6/.pt, hjust = 1, vjust = 1, family = "Arial", colour = colour_pallette[6]) +
+  
+  scale_fill_manual(values = alpha(c(colour_pallette[6], colour_pallette[3]), 0.75)) +
+  scale_shape_manual(values = c(21, 22, 24)) +
+  scale_x_continuous(expand = c(0.02, 0.02), breaks = c(0.01, 1, 2, 3, 4), labels = c(0, 1, 2, 3, 4), limits = c(0, 4)) +
+  scale_y_continuous(expand = c(0.02, 0.02), breaks = c(0, 0.2, 0.4, 0.6, 0.8, 1), limits = c(0, 1)) +
+  facet_grid(. ~ cell_line) +
+  labs(x = "C-604 (µM)", y = "ENSA-P / ENSA") +
+  graph_theme +
+  theme(plot.title = element_text(colour = "#000000", size = 6, margin = margin(b = 0), family = "Arial"),
+        legend.position = "none",
+        legend.justification = "center",
+        legend.key.width = unit(4, 'pt'),
+        legend.key.height = unit(5.5, 'pt'),
+        legend.text = element_text(colour = "#000000", size = 6, margin = margin(r = -0.75)),
+        legend.margin = margin(l = -2, b = -8),
+        legend.spacing.x = unit(1, "pt"),
+        legend.title = element_blank())
+
+ggsave(paste(path_results, "ENSA-P.pdf", sep = ""), graph_ENSAP,
+       width = 60, height = 27.5, units = "mm", device = cairo_pdf)
+```
+
+## Plotting p-values of cell-specific differences in EC50 values
+```{r}
+data_graph_EC50_p <- data_ENSAP_coefficients %>%
+  ((function (data) {
+    
+    tmp.HCC1395 <- filter(data, cell_line == "HCC1395")$EC50
+    tmp.RPE1 <- filter(data, cell_line == "RPE-1")$EC50
+    tmp.HeLa <- filter(data, cell_line == "HeLa")$EC50
+    tmp.U2OS <- filter(data, cell_line == "U2OS")$EC50
+    
+    tmp.HCC1395.RPE1.p <- t.test(tmp.HCC1395, tmp.RPE1)[3][[1]]
+    tmp.HCC1395.HeLa.p <- t.test(tmp.HCC1395, tmp.HeLa)[3][[1]]
+    tmp.HCC1395.U2OS.p <- t.test(tmp.HCC1395, tmp.HeLa)[3][[1]]
+    tmp.HeLa.RPE1.p <- t.test(tmp.HeLa, tmp.RPE1)[3][[1]]
+    tmp.HeLa.U2OS.p <- t.test(tmp.HeLa, tmp.U2OS)[3][[1]]
+    tmp.RPE1.U2OS.p <- t.test(tmp.RPE1, tmp.U2OS)[3][[1]]
+    
+    tmp.output <- data.frame(
+      
+      cell_line_A = c("HCC1395", "HCC1395", "HCC1395", "HeLa", "HeLa", "RPE1"),
+      cell_line_B = c("RPE1", "HeLa", "U2OS", "RPE1", "U2OS", "U2OS"),
+      p = c(tmp.HCC1395.RPE1.p, tmp.HCC1395.HeLa.p, tmp.HCC1395.U2OS.p, tmp.HeLa.RPE1.p, tmp.HeLa.U2OS.p, tmp.RPE1.U2OS.p))
+    
+    return(tmp.output)})) %>%
+  
+  bind_rows() %>%
+  mutate(label = case_when(p >= 0.05 ~ "ns",
+                           p < 0.05 & p >= 0.01 ~ "*",
+                           p < 0.01 & p >= 0.001 ~ "**",
+                           p < 0.001 & p >= 0.0001 ~ "***",
+                           p < 0.0001 & p >= 0.00001 ~ "****",
+                           p < 0.00001 ~ "*****"))
+
+graph_EC50_p <- ggplot(data = data_graph_EC50_p, aes(x = "p", y = paste(cell_line_A, cell_line_B, sep = " vs. "))) +
+  
+  geom_blank() +
+  geom_text(aes(label = paste("p =", round(p, 3))), family = "Arial", size = 6/.pt, hjust = 0) +
+  graph_theme +
+  theme(axis.text.y = element_text(colour = "#000000", size = 6, margin = margin(r = -30), family = "Arial"),
+        panel.border = element_blank(),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.text.x = element_blank())
+
+data_graph <- data_ENSAP_coefficients
+data_graph_summary <- data_graph %>%
+  reframe(EC50_mean = mean(EC50), .by = cell_line)
+
+graph_ENSAP_EC50 <- ggplot() +
+  
+  
+  geom_point(data = data_graph,
+             aes(x = cell_line, y = EC50),
+             size = 1.5, stroke = 0.25, shape = 21,
+             alpha = 1, colour = "#FFFFFF", fill = "#000000",
+             position = position_jitter(0.3)) +
+  
+  geom_segment(aes(x = 0.5, xend = 1.5,
+                   y = filter(data_graph_summary, cell_line == "HCC1395")$EC50_mean,
+                   yend = filter(data_graph_summary, cell_line == "HCC1395")$EC50_mean),
+               colour = colour_pallette[2]) +
+  
+  geom_segment(aes(x = 1.5, xend = 2.5,
+                   y = filter(data_graph_summary, cell_line == "HeLa")$EC50_mean,
+                   yend = filter(data_graph_summary, cell_line == "HeLa")$EC50_mean),
+               colour = colour_pallette[2]) +
+  
+  geom_segment(aes(x = 2.5, xend = 3.5,
+                   y = filter(data_graph_summary, cell_line == "RPE-1")$EC50_mean,
+                   yend = filter(data_graph_summary, cell_line == "RPE-1")$EC50_mean),
+               colour = colour_pallette[2]) +
+  
+  geom_segment(aes(x = 3.5, xend = 4.5,
+                   y = filter(data_graph_summary, cell_line == "U2OS")$EC50_mean,
+                   yend = filter(data_graph_summary, cell_line == "U2OS")$EC50_mean),
+               colour = colour_pallette[2]) +
+  
+  geom_vline(aes(xintercept = c(1.5, 2.5, 3.5)), colour = colour_pallette[6], linewidth = 0.25, linetype = 1) +
+  scale_y_continuous(limits = c(0, 1)) +
+  labs(y = bquote(EC[50]~"(µM)")) +
+  
+  graph_theme +
+  theme(axis.title.x = element_blank(),
+        axis.text.x = element_text(colour = "#000000", size = 6, margin = margin(t = 2), angle = -90, hjust = 0, vjust = 0.5, family = "Arial"))
+
+ggsave(paste(path_results, "graph_ENSAP_EC50.pdf", sep = ""), graph_ENSAP_EC50,
+       width = 25, height = 35, units = "mm", device = cairo_pdf)
+  
+graph_composite <- plot_grid(
+  graph_ENSAP_EC50,
+  graph_EC50_p,
+  ncol = 2,
+  rel_widths = c(2.5, 4),
+  align = "h")
+
+ggsave(paste(path_results, "graph_EC5_p_composite.pdf", sep = ""), graph_composite,
+       width = 55, height = 35, units = "mm", device = cairo_pdf)
+```
+
+
+
+
+
+

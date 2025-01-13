@@ -1,0 +1,300 @@
+---
+title: "Live Cell Imaging Analysis"
+output: html_document
+date: "2024-04-22"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Loading Libraries
+```{r message=FALSE, warning=FALSE, paged.print=FALSE}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(ggforce)
+library(ggExtra)
+library(grid)
+library(gridExtra)
+library(ggridges)
+library(ggbeeswarm)
+library(gghalves)
+library(cowplot)
+library(gplots)
+library(lattice)
+library(ggthemes)
+library(scales)
+library(seqinr)
+library(tidyverse)
+library(Dict)
+library(viridis)
+library(latex2exp)
+library(ggnewscale)
+library(ggh4x)
+library(extrafont)
+library(gtable)
+library(rstatix)
+library(readxl)
+```
+
+## Establishing paths to data and results folders
+```{r}
+path_data <- ### Path to LC_cell_lineages.csv
+path_results <- ### Path to an export folder
+```
+
+## Establoshing ggplot theme arguments
+```{r}
+graph_theme <- theme(
+  plot.margin = margin(b = 0.2, l = 0.2, t = 0.2, r = 0.2, unit = "lines"),
+  text = element_text(size = 1, family = "Arial"),
+  panel.spacing.y = unit(0.05, "lines"),
+  panel.spacing.x = unit(0.05, "lines"),
+  panel.border = element_rect(colour = "#000000", fill = NA, linewidth = 0.5),
+  panel.background = element_blank(),
+  panel.grid.major.y = element_blank(),
+  panel.grid.minor.y = element_blank(),
+  panel.grid.major.x = element_blank(),
+  panel.grid.minor.x = element_blank(),
+  strip.background = element_blank(),
+  strip.text.x = element_text(colour = "#000000", size = 6, margin = margin(b = 2, t = 2), family = "Arial"),
+  strip.text.y = element_text(colour = "#000000", size = 6, margin = margin(l = 2, b = 1), family = "Arial"),
+  strip.clip = "off",
+  axis.ticks.x = element_line(colour = "#000000", linewidth = 0.25),
+  axis.ticks.y = element_line(colour = "#000000", linewidth = 0.25),
+  axis.ticks.length = unit(0.1, "lines"),
+  axis.title.x = element_text(colour = "#000000", size = 6, margin = margin(t = 3), family = "Arial"),
+  axis.title.y = element_text(colour = "#000000", size = 6, margin = margin(r = 2), family = "Arial"),
+  axis.text.x = element_text(colour = "#000000", size = 6, margin = margin(t = 2), family = "Arial"),
+  axis.text.y = element_text(colour = "#000000", size = 6, margin = margin(r = 2), family = "Arial"),
+  plot.title = element_blank(),
+  legend.key = element_rect(fill = "#FFFFFF"),
+  legend.position = "none",
+  legend.justification = "left",
+  legend.key.width = unit(2, 'pt'),
+  legend.key.height = unit(2, 'pt'),
+  legend.text = element_text(colour = "#000000", size = 6, margin = margin(r = 1), family = "Arial"),
+  legend.margin = margin(r = 0, b = 0, l = 0, t = 0),
+  legend.title = element_blank())
+```
+
+## Establishing colour pallette
+```{r}
+colour_pallette <- c("#D4D3CF", "#DC6B83", "#75B1CE", "#D8C367", "#526C94", "#000000", "#ccdba2", "#889466", "#c6b2d1", "#654875")
+```
+
+## Establishing lineages
+```{r}
+n_generations <- 10
+labels <- seq(2 ^ n_generations, 65535, 2 ^ n_generations * 2)
+df_lineages <- data.frame(lineage = labels) %>%
+  mutate(low = lineage - (2 ** n_generations - 1),
+         high = lineage + (2 ** n_generations - 1))
+
+print(df_lineages)
+```
+
+## Importing data
+```{r}
+data_raw <- read.csv(path_data, sep = ",")
+```
+
+## Establishing a datframe containing time-stamps of mitotic and fusion events
+```{r}
+data_mitotic_events <- data_raw %>%
+  filter(classification %in% c("object divided", "multipolar division", "object fusion", "object loss", "object left the frame")) %>%
+  mutate(registered_objects = gsub("\\[|\\]", "", registered_objects)) %>%
+  reframe(minimum = min(label), maximum = max(label), label = round(median(label)),
+          .by = c(experiment, drug, cell_line, treatment, lineage, frame, time, classification, registered_objects)) %>%
+  group_by(experiment, drug, cell_line, treatment, lineage, frame, time, classification, label) %>%
+  group_split() %>%
+  lapply((function (data) {
+    
+    if (data$classification %in% c("object divided", "multipolar division")) {
+      
+      objects <- strsplit(data$registered_objects, " ")[[1]]
+      objects <- as.numeric(objects[objects != ""])
+      data <- mutate(data, minimum = min(objects), maximum = max(objects))
+    }
+    return(data)
+  })) %>%
+  bind_rows() %>%
+  ungroup()
+ 
+data_mitotic_events 
+```
+
+## Establishing number of cell divisions and cell fusions per lineage
+```{r}
+data_divisions_per_lineage <- data_mitotic_events %>%
+  filter(classification == "object divided") %>%
+  reframe(count = n(), .by = c(experiment, cell_line, treatment, lineage)) %>%
+  complete(experiment, cell_line, treatment, lineage) %>%
+  replace(is.na(.), 0)
+
+data_fusions_per_lineage <- data_mitotic_events %>%
+  filter(classification == "object fusion") %>%
+  reframe(count = n(), .by = c(experiment, cell_line, treatment, lineage)) %>%
+  complete(experiment, cell_line, treatment, lineage) %>%
+  replace(is.na(.), 0)
+
+data_divisions_per_lineage
+```
+
+## Plotting cell lineages
+```{r}
+graph_data <- data_raw %>%
+  filter(treatment %in% c(0, 0.25, 0.5, 1, 2), cell_line %in% c("HeLa", "RPE-1", "HCC1395")) %>%
+  mutate(treatment = factor(treatment, levels = c(0, 0.25, 0.5, 1, 2)),
+         cell_line = factor(cell_line, levels = c("HCC1395", "RPE-1", "HeLa")),
+         drug = "C-604 (µM)")
+
+graph_data_events <- data_mitotic_events %>%
+  filter(treatment %in% c(0, 0.25, 0.5, 1, 2), cell_line %in% c("HeLa", "RPE-1", "HCC1395")) %>%
+  gather(key = y, value = y_position, 10:11) %>%
+  mutate(treatment = factor(treatment, levels = c(0, 0.25, 0.5, 1, 2)),
+         cell_line = factor(cell_line, levels = c("HCC1395", "RPE-1", "HeLa")),
+         drug = "C-604 (µM)")
+
+graph_lineages <- ggplot() +
+  
+  geom_line(data = graph_data, aes(x = time / 60, y = label, group = label, colour = cell_line),
+            linewidth = 0.5, alpha = 1, lineend = "round") +
+  
+  geom_line(data = graph_data_events, aes(x = time / 60, y = y_position, group = interaction(time, label), colour = cell_line),
+            linewidth = 0.5, lineend = "round") +
+  
+  geom_point(data = filter(graph_data_events, classification == "object fusion"),
+             aes(x = time / 60, y = label, fill = factor(lineage)),
+             shape = 21, size = 0.75, stroke = 0.5, colour = colour_pallette[2], fill = "#FFFFFF") +
+  
+  geom_point(data = filter(graph_data_events, classification == "object loss"),
+             aes(x = time / 60, y = label, fill = factor(lineage)),
+             shape = 21, size = 0.75, stroke = 0.5, colour = "#000000", fill = "#000000") +
+  
+  scale_colour_manual(values = c(colour_pallette[1], colour_pallette[7], colour_pallette[9])) +
+  
+  scale_y_continuous(breaks = labels[1:10], labels = c(1:10)) +
+  scale_x_continuous(breaks = c(0, 24, 48)) +
+  labs(x = "Time (h)", y = "Lineage #") +
+  facet_nested(. ~ cell_line + treatment, scales = "free",
+               nest_line = element_line(linetype = 1, linewidth = 0.25),
+               resect = unit(0.04, "in"),
+               strip = strip_nested(clip = "off")) +
+  graph_theme +
+  theme(strip.text.x = element_text(colour = "#000000", size = 6, margin = margin(b = 1, t = 1), family = "Arial"),
+        axis.text.x = element_text(colour = "#000000", size = 6, margin = margin(t = 2), angle = -90, vjust = 0.5, hjust = 0))
+
+ggsave(paste(path_results, "graph_lineages.pdf", sep = ""), graph_lineages,
+       width = 121.5, height = 48.5, units = "mm", device = cairo_pdf)
+```
+
+## Plotting number of cell divisions per lineage
+```{r}
+data_graph <- data_divisions_per_lineage %>%
+  filter(treatment %in% c(0, 0.25, 0.5, 1, 2), cell_line %in% c("HeLa", "RPE-1", "HCC1395")) %>%
+  mutate(treatment = factor(treatment, levels = c(0, 0.25, 0.5, 1, 2)),
+         cell_line = factor(cell_line, levels = c("HCC1395", "RPE-1", "HeLa")),
+         drug = "C-604 (µM)")
+
+data_graph_summary <- data_graph %>%
+  reframe(count_median = median(count), count_mean = mean(count), .by = c(experiment, cell_line, treatment))
+
+graph_divisions_per_lineage <- ggplot() +
+  
+  geom_point(data = data_graph, aes(x = count, y = treatment, group = lineage, colour = cell_line),
+             shape = 16, alpha = 0.75,
+             size = 1, stroke = 0.25,
+             position = position_jitter(0.21, 0.21)) +
+  
+  geom_segment(data = filter(data_graph_summary, treatment == 2),
+               aes(x = count_median, xend = count_median, y = 4.5, yend = 5.5),
+               colour = colour_pallette[2]) +
+  
+  geom_segment(data = filter(data_graph_summary, treatment == 1),
+               aes(x = count_median, xend = count_median, y = 3.5, yend = 4.5),
+               colour = colour_pallette[2]) +
+  
+  geom_segment(data = filter(data_graph_summary, treatment == 0.5),
+               aes(x = count_median, xend = count_median, y = 2.5, yend = 3.5),
+               colour = colour_pallette[2]) +
+  
+  geom_segment(data = filter(data_graph_summary, treatment == 0.25),
+               aes(x = count_median, xend = count_median, y = 1.5, yend = 2.5),
+               colour = colour_pallette[2]) +
+  
+  geom_segment(data = filter(data_graph_summary, treatment == 0),
+               aes(x = count_median, xend = count_median, y = 0.5, yend = 1.5),
+               colour = colour_pallette[2]) +
+  
+  scale_colour_manual(values = c(colour_pallette[1], colour_pallette[7], colour_pallette[9])) +
+  geom_hline(yintercept = c(1.5, 2.5, 3.5, 4.5), colour = colour_pallette[1], linewidth = 0.25) +
+  coord_flip() +
+  labs(x = "Cell divisions per lineage", y = "C-604 (µM)") +
+  scale_y_discrete(expand = c(0.1, 0.1)) +
+  scale_x_continuous(expand = c(0.1, 0.1)) +
+  facet_grid(cell_line ~ .) +
+  
+  graph_theme +
+  theme(axis.text.x = element_text(colour = "#000000", size = 6, margin = margin(t = 2), angle = -90, vjust = 0.5, hjust = 0))
+
+ggsave(paste(path_results, "graph_divisions_per_lineage.pdf", sep = ""), graph_divisions_per_lineage,
+       width = 22.5, height = 45, units = "mm", device = cairo_pdf)
+```
+
+## Plotting number of cell fusions per lineage
+```{r}
+data_graph <- data_fusions_per_lineage %>%
+  filter(treatment %in% c(0, 0.25, 0.5, 1, 2), cell_line %in% c("HeLa", "RPE-1", "HCC1395")) %>%
+  mutate(treatment = factor(treatment, levels = c(0, 0.25, 0.5, 1, 2)),
+         cell_line = factor(cell_line, levels = c("HCC1395", "RPE-1", "HeLa")),
+         drug = "C-604 (µM)")
+
+data_graph_summary <- data_graph %>%
+  reframe(count_median = median(count), count_mean = mean(count), .by = c(experiment, cell_line, treatment))
+
+graph_fusions_per_lineage <- ggplot() +
+  
+  geom_point(data = data_graph, aes(x = count, y = treatment, group = lineage, colour = cell_line),
+             shape = 16, alpha = 0.75,
+             size = 1, stroke = 0.25,
+             position = position_jitter(0.21, 0.21)) +
+  
+  geom_segment(data = filter(data_graph_summary, treatment == 2),
+               aes(x = count_median, xend = count_median, y = 4.5, yend = 5.5),
+               colour = colour_pallette[2]) +
+  
+  geom_segment(data = filter(data_graph_summary, treatment == 1),
+               aes(x = count_median, xend = count_median, y = 3.5, yend = 4.5),
+               colour = colour_pallette[2]) +
+  
+  geom_segment(data = filter(data_graph_summary, treatment == 0.5),
+               aes(x = count_median, xend = count_median, y = 2.5, yend = 3.5),
+               colour = colour_pallette[2]) +
+  
+  geom_segment(data = filter(data_graph_summary, treatment == 0.25),
+               aes(x = count_median, xend = count_median, y = 1.5, yend = 2.5),
+               colour = colour_pallette[2]) +
+  
+  geom_segment(data = filter(data_graph_summary, treatment == 0),
+               aes(x = count_median, xend = count_median, y = 0.5, yend = 1.5),
+               colour = colour_pallette[2]) +
+  
+  scale_colour_manual(values = c(colour_pallette[1], colour_pallette[7], colour_pallette[9])) +
+  geom_hline(yintercept = c(1.5, 2.5, 3.5, 4.5), colour = colour_pallette[1], linewidth = 0.25) +
+  scale_fill_gradient2(low = "#FFFFFF", mid = colour_pallette[4], high = colour_pallette[2],
+                       midpoint = 4, limits = c(0, 8), breaks = c(0),
+                       na.value = colour_pallette[1]) +
+  coord_flip() +
+  labs(x = "Cell fusions per lineage", y = "C-604 (µM)") +
+  scale_y_discrete(expand = c(0.1, 0.1)) +
+  scale_x_continuous(expand = c(0.1, 0.1)) +
+  facet_grid(cell_line ~ .) +
+  
+  graph_theme +
+  theme(axis.text.x = element_text(colour = "#000000", size = 6, margin = margin(t = 2), angle = -90, vjust = 0.5, hjust = 0))
+
+ggsave(paste(path_results, "graph_fusions_per_lineage.pdf", sep = ""), graph_fusions_per_lineage,
+       width = 22.5, height = 45, units = "mm", device = cairo_pdf)
+```

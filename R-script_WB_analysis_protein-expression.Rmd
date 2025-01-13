@@ -1,0 +1,338 @@
+---
+title: "Cell line panel characterisation (WB)"
+output: html_document
+date: "2024-06-20"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Loading Libraries
+```{r message=FALSE, warning=FALSE, paged.print=FALSE}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(ggforce)
+library(ggExtra)
+library(ggtext)
+library(grid)
+library(gridExtra)
+library(ggridges)
+library(ggbeeswarm)
+library(gghalves)
+library(ggrepel)
+library(ggvenn)
+library(cowplot)
+library(gplots)
+library(lattice)
+library(ggthemes)
+library(scales)
+library(seqinr)
+library(tidyverse)
+library(Dict)
+library(zoo)
+library(emdbook)
+library(PupillometryR)
+library(lemon)
+library(embed)
+library(fpc)
+library(dbscan)
+library(viridis)
+library(latex2exp)
+library(ggnewscale)
+library(ggh4x)
+library(extrafont)
+library(readxl)
+library(qvalue)
+library(tidymodels)
+library(embed)
+library(fpc)
+library(dbscan)
+library(corrr)
+library(FactoMineR)
+library(factoextra)
+```
+
+## Establishing paths to data and results folders
+```{r}
+path_data <- ### WB_B55a-GWL-PP2C-ENSA_protein-levels.xlsx
+path_data_ED50 <- ### Path to CF_C-604_ED50.csv
+path_results <- ### Path to an export folder
+```
+
+## Establishing ggplot theme arguments
+```{r}
+graph_theme <- theme(
+  plot.margin = margin(b = 0.2, l = 0.2, t = 0.2, r = 0.2, unit = "lines"),
+  text = element_text(size = 1, family = "Arial"),
+  panel.spacing.y = unit(0.1, "lines"),
+  panel.spacing.x = unit(0.1, "lines"),
+  panel.border = element_rect(colour = "#000000", fill = NA, linewidth = 0.5),
+  panel.background = element_blank(),
+  panel.grid.major.y = element_blank(),
+  panel.grid.minor.y = element_blank(),
+  panel.grid.major.x = element_blank(),
+  panel.grid.minor.x = element_blank(),
+  strip.background = element_blank(),
+  strip.text.x = element_text(colour = "#000000", size = 6, margin = margin(b = 2, t = 2), vjust = 0, family = "Arial"),
+  strip.text.y = element_text(colour = "#000000", size = 6, margin = margin(l = 2), family = "Arial"),
+  strip.clip = "off",
+  axis.ticks.x = element_line(colour = "#000000", linewidth = 0.25),
+  axis.ticks.y = element_line(colour = "#000000", linewidth = 0.25),
+  axis.ticks.length = unit(0.1, "lines"),
+  axis.title.x = element_text(colour = "#000000", size = 6, margin = margin(t = 3), family = "Arial"),
+  axis.title.y = element_text(colour = "#000000", size = 6, margin = margin(r = 2), family = "Arial"),
+  axis.text.x = element_text(colour = "#000000", size = 6, margin = margin(t = 2), family = "Arial"),
+  axis.text.y = element_text(colour = "#000000", size = 6, margin = margin(r = 2), family = "Arial"),
+  plot.title = element_blank(),
+  legend.key = element_rect(fill = "#FFFFFF"),
+  legend.position = "none",
+  legend.justification = "left",
+  legend.key.width = unit(2, 'pt'),
+  legend.key.height = unit(2, 'pt'),
+  legend.text = element_text(colour = "#000000", size = 6, margin = margin(r = 1), family = "Arial"),
+  legend.margin = margin(r = 0, b = 0, l = 0, t = 0),
+  legend.title = element_blank())
+```
+
+## Establishing colour pallette
+```{r}
+colour_pallette <- c("#D4D3CF", "#DC6B83", "#75B1CE", "#D8C367", "#526C94", "#000000", "#ccdba2", "#889466", "#c6b2d1", "#654875")
+```
+
+## Importing experimental ED50 values of C-604
+```{r}
+data_ED50 <- read_csv(path_data_ED50, show_col_types = FALSE)
+
+data_ED50
+```
+
+## Importing and processing protein expression (WB) data
+```{r}
+data_expression <- read_xlsx(path_data) %>%
+  gather(key = gene, value = expression, 3:ncol(.)) %>%
+  mutate(gene = paste(gene, "_raw", sep = "")) %>%
+  spread(key = gene, value = expression) %>%
+  mutate(PPP2R2A_normalised = PPP2R2A_raw / GAPDH_raw,
+         MASTL_normalised = MASTL_raw / GAPDH_raw,
+         ENSA_normalised = ENSA_raw / GAPDH_raw,
+         PPP2C_normalised = PPP2C_raw / GAPDH_raw) %>%
+  gather(key = gene, value = expression, 3:ncol(.)) %>%
+  separate(gene, into = c("gene", "data"))
+
+data_expression_scaled <- data_expression %>%
+  filter(data == "normalised") %>%
+  group_by(experiment, gene) %>%
+  mutate(expression = expression / max(expression)) %>%
+  ungroup() %>%
+  merge(data_ED50, on = cell_line) %>%
+  mutate(cell_line = factor(cell_line, levels = unique(cell_line))) 
+
+data_expression_scaled_summary <- data_expression_scaled %>%
+  reframe(expression_mean = mean(expression),
+          expression_sd = sd(expression),
+          .by = c(cell_line, gene)) %>%
+  merge(data_ED50, on = cell_line)
+
+data_expression
+```
+
+## Predicting ED50 values using mathematical models
+```{r}
+model1 <- function(PPP2R2A, MASTL) {return(0.399 * MASTL / PPP2R2A + 0.406)}
+
+data_ED50_prediction <- data_expression_scaled %>%
+  dplyr::select(experiment, cell_line, gene, expression) %>%
+  spread(key = gene, value = expression) %>%
+  mutate(ED50_prediction = model1(PPP2R2A, MASTL))
+
+data_ED50_prediction_summary <- data_ED50_prediction %>%
+  reframe(ED50_prediction_mean = mean(ED50_prediction), ED50_prediction_sd = sd(ED50_prediction),
+          .by = cell_line) %>%
+  merge(data_ED50, on = cell_line) %>%
+  dplyr::select(group, cell_line, ED50_mean, ED50_sd, ED50_prediction_mean, ED50_prediction_sd)
+
+data_ED50_prediction_summary
+```
+
+## Calculating correlation coefficients
+```{r}
+data_corr <- data_expression_scaled_summary %>%
+  group_by(gene) %>%
+  group_split() %>%
+  lapply((function (data) {
+    
+    tmp.expression = data$expression_mean
+    tmp.ED50 = data$ED50_mean
+    tmp.corr <- cor.test(tmp.ED50, tmp.expression, method = "pearson")
+    tmp.lm <- lm(tmp.ED50 ~ tmp.expression)
+    
+    data_output <- data.frame(
+      gene = unique(data$gene),
+      pearson_corr = tmp.corr$estimate,
+      pearson_p = tmp.corr$p.value,
+      lm_slope = summary(tmp.lm)$coef[2],
+      lm_R_squared = summary(tmp.lm)$r.squared,
+      lm_R_squared_adj = summary(tmp.lm)$adj.r.squared)
+    
+    return(data_output)
+
+  })) %>%
+  bind_rows()
+
+data_corr
+```
+
+## Plotting expression levels
+```{r}
+list_cell_lines <- c("HCC1143", "HCC1395", "HCC1937", "NCI-H226", "NCI-H2228", "769-P",
+                      "U2OS", "MM231", "RPE-1", "HT-1080", "HeLa", "BT-549")
+
+data_graph <- data_expression_scaled_summary %>%
+  mutate(gene = factor(gene, levels = c("MASTL", "PPP2R2A", "PPP2C", "ENSA"), labels = c("\nGWL", "\nB55α", "\nPPP2Cα/β", "ENSA\nARPP19")),
+         cell_line = factor(cell_line, levels = list_cell_lines))
+
+data_graph_points <- data_expression_scaled %>%
+  mutate(gene = factor(gene, levels = c("MASTL", "PPP2R2A", "PPP2C", "ENSA"), labels = c("\nGWL", "\nB55α", "\nPPP2Cα/β", "ENSA\nARPP19")),
+         cell_line = factor(cell_line, levels = list_cell_lines))
+
+data_graph_corr <- data_corr %>%
+  mutate(gene = factor(gene, levels = c("MASTL", "PPP2R2A", "PPP2C", "ENSA"), labels = c("\nGWL", "\nB55α", "\nPPP2Cα/β", "ENSA\nARPP19")))
+
+graph_expression <- ggplot(data = data_graph,
+                           aes(x = cell_line, y = expression_mean)) +
+  
+  geom_bar(aes(x = cell_line, y = expression_mean, fill = gene),
+           stat = "identity", position = "identity", colour = colour_pallette[6],
+           linewidth = 0.25, width = 0.6) +
+  
+  geom_errorbar(aes(x = cell_line,
+                    ymin = expression_mean,
+                    ymax = expression_mean + expression_sd),
+                width = 0.5, linewidth = 0.25, colour = colour_pallette[6]) +
+  
+  geom_point(data = data_graph_points,
+             aes(x = cell_line, y = expression, group = experiment),
+             position = position_dodge(0.75),
+             shape = 21, size = 0.85, stroke = 0.35,
+             fill = "#FFFFFF") +
+  
+  geom_text(data = filter(data_graph_corr, gene %in% c("\nB55α", "\nPPP2Cα/β")), aes(x = 0.5, y = 0.95, label = paste("r = ", round(pearson_corr, 2), sep = "")),
+            size = 2.11, vjust = 0, hjust = -0.1) +
+  
+  geom_text(data = filter(data_graph_corr, gene %in% c("ENSA\nARPP19", "\nGWL")), aes(x = 11.5, y = 0.95, label = paste("r = ", round(pearson_corr, 2), sep = "")),
+            size = 2.11, vjust = 0, hjust = 0.8) +
+
+  scale_x_discrete(expand = c(0.05, 0.05)) +
+  scale_y_continuous(expand = c(0, 0), limits = c(0, 1.2), breaks = c(0, 0.25, 0.5, 0.75, 1)) +
+  scale_fill_manual(values = alpha(c(colour_pallette[5], colour_pallette[2], colour_pallette[4], colour_pallette[1]), 0.5)) +
+  labs(x = "", y = "Expression (normalised, scaled)") +
+  facet_grid(gene ~ ., scales = "free_y") +
+  
+  graph_theme +
+  theme(
+    axis.text.x = element_text(colour = "#000000", size = 6, margin = margin(t = 2), angle = -90, hjust = 0, vjust = 0.5, family = "Arial"),
+    plot.margin = margin(b = 0.2, l = 0.3, t = -0.575, r = 0.2, unit = "lines"),
+    axis.title.y = element_text(colour = "#000000", size = 6, margin = margin(r = 5)),
+    panel.grid.major.y = element_blank(),
+    panel.grid.major.x = element_blank())
+
+ggsave(paste(path_results, "graph_expression.pdf", sep = ""), graph_expression,
+       width = 55, height = 65 , units = "mm", device = cairo_pdf)
+```
+
+## Plotting ED50 values
+```{r}
+list_cell_lines <- c("HCC1143", "HCC1395", "HCC1937", "NCI-H226", "NCI-H2228", "769-P",
+                      "U2OS", "MM231", "RPE-1", "HT-1080", "HeLa", "BT-549")
+
+data_graph <- data_expression_scaled %>%
+  dplyr::select(cell_line, ED50_mean, ED50_sd) %>%
+  unique() %>%
+  mutate(cell_line = factor(cell_line, levels = list_cell_lines))
+
+graph_ED50 <- ggplot(data = data_graph,
+                     aes(x = cell_line, y = ED50_mean)) +
+  
+  geom_bar(aes(x = cell_line, y = ED50_mean),
+           stat = "identity", position = "identity",
+           colour = colour_pallette[6], fill = colour_pallette[6],
+           linewidth = 0.25, width = 0.6) +
+  
+  geom_errorbar(aes(x = cell_line,
+                    ymin = ED50_mean,
+                    ymax = ED50_mean + ED50_sd),
+                width = 0.5, linewidth = 0.25, colour = colour_pallette[6]) +
+
+  scale_x_discrete(expand = c(0.05, 0.05)) +
+  scale_y_continuous(expand = c(0, 0), limits = c(0, 2.8), breaks = c(0, 0.8, 1.6, 2.4)) +
+  labs(x = "", y = bquote(ED[50]~"(µM)")) +
+  
+  graph_theme +
+  theme(
+    panel.border = element_blank(),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    axis.line = element_line(linewidth = 0.25, colour = "#000000"),
+    plot.margin = margin(b = 0, l = 0.3, t = 0.3, r = 0.2, unit = "lines"),
+    axis.title.y = element_text(colour = "#000000", size = 6, margin = margin(r = 5)),
+    panel.grid.major.y = element_blank(),
+    panel.grid.major.x = element_blank())
+
+ggsave(paste(path_results, "graph_ED50.pdf", sep = ""), graph_ED50,
+       width = 40, height = 15 , units = "mm", device = cairo_pdf)
+```
+
+## Creating a composite graph of expresion and ED50 values
+```{r}
+graph_composite <- plot_grid(graph_ED50,
+                             graph_expression,
+                             ncol = 1, nrow = 2,
+                             rel_widths = c(1, 1),
+                             rel_heights = c(1, 5),
+                             align = "hv",
+                             axis = "lr")
+
+ggsave(paste(path_results, "graph_composite.pdf", sep = ""), graph_composite,
+       width = 50, height = 69.085 , units = "mm", device = cairo_pdf)
+```
+## Comparing empiric and modeled data
+```{r}
+list_cell_lines <- c("HCC1143", "HCC1395", "HCC1937", "NCI-H226", "NCI-H2228", "769-P",
+                      "U2OS", "MM231", "RPE-1", "HT-1080", "HeLa", "BT-549")
+
+data_graph <- data_ED50_prediction_summary %>%
+  mutate(cell_line = factor(cell_line, levels = list_cell_lines))
+
+pearson_cor <- cor.test(data_graph$ED50_mean, data_graph$ED50_prediction_mean, method = "pearson")
+linear_model <- lm(data_graph$ED50_prediction_mean~data_graph$ED50_mean)
+lm_R_squared = round(summary(linear_model)$r.squared, 2)
+
+graph_graph_model_vs_empiric <- ggplot(data = data_graph, aes(x = ED50_mean, y = ED50_prediction_mean)) +
+  
+  geom_smooth(method = "lm", formula = y~x,
+              colour = colour_pallette[10], fill = colour_pallette[9],
+              linewidth = 0.4) +
+  
+  geom_point(size = 1.75, stroke = 0.5, shape = 21, colour = colour_pallette[10], fill = "#FFFFFF") +
+  
+  annotate("text", x = 0.2, y = 2, label = paste("r = ", round(pearson_cor$estimate, 2), sep = ""),
+           family = "Arial", size = 6/.pt, hjust = 0, vjust = 0.2, colour = colour_pallette[6]) +
+  
+  annotate("text", x = 0.2, y = 1.7, label = bquote(R^2~"="~.(lm_R_squared)),
+           family = "Arial", size = 6/.pt, hjust = 0, vjust = 0.2, colour = colour_pallette[6]) +
+  
+  labs(x = bquote(Experimental~ED[50]~(µM)), y = bquote("Model *ED"[50]~(µM))) +
+  scale_x_continuous(expand = c(0, 0), breaks = c(0.1, 0.4, 0.8, 1.2, 1.6, 2)) +
+  scale_y_continuous(expand = c(0, 0), breaks = c(0.1, 0.4, 0.8, 1.2, 1.6, 2)) +
+  coord_cartesian(clip = 'off') +
+  graph_theme +
+  theme(panel.border = element_blank(),
+        axis.line = element_line(colour = "#000000", linewidth = 0.25))
+
+ggsave(paste(path_results, "graph_model_vs_empiric.pdf", sep = ""), graph_graph_model_vs_empiric,
+       width = 37.5, height = 35 , units = "mm", device = cairo_pdf)
+```
+
+
