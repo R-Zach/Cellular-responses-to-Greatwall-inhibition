@@ -43,8 +43,8 @@ library(pracma)
 
 ## Establishing paths to data and results folders
 ```{r}
-path_data <- ### Path to   IF_single-cell_C-604_RO-3306.csv
-path_results <- ### Path to an export folder
+path_data <- ### /path/to/IF_single-cell_C-604_RO-3306.csv
+path_results <- ### /path/to/an/export/folder/
 ```
 
 ## Establishing ggplot theme arguments
