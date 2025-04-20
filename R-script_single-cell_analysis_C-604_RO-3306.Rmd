@@ -428,7 +428,7 @@ data_graph <- data_cell_counts %>%
   mutate(x_axis = 1:n()) %>%
   ungroup()
 
-graph_cell_count_heatmap <- ggplot(data = data_graph, aes(x = x_axis, y = RO3306, fill = count_norm)) +
+graph_cell_count_heatmap <- ggplot(data = data_graph, aes(x = x_axis, y = factor(RO3306), fill = count_norm)) +
   geom_tile(colour = colour_pallette[1], linewidth = 0.25) +
   
   scale_fill_gradient2(low = "#FFFFFF", mid = colour_pallette[4], high = colour_pallette[2],
@@ -474,7 +474,7 @@ data_graph <- data_synergy %>%
   mutate(x_axis = 1:n()) %>%
   ungroup()
 
-graph_synergy_heatmap <- ggplot(data = data_graph, aes(x = x_axis, y = RO3306, fill = S_HSA)) +
+graph_synergy_heatmap <- ggplot(data = data_graph, aes(x = x_axis, y = factor(RO3306), fill = S_HSA)) +
   
   geom_tile(colour = colour_pallette[1], linewidth = 0.25) +
   
@@ -529,7 +529,7 @@ data_graph <- data_cell_cycle_proportions %>%
   mutate(x_axis = 1:n()) %>%
   ungroup()
 
-graph_cell_cycle_heatmap <- ggplot(data = data_graph, aes(x = x_axis, y = RO3306, fill = prop)) +
+graph_cell_cycle_heatmap <- ggplot(data = data_graph, aes(x = x_axis, y = factor(RO3306), fill = prop)) +
   geom_tile(colour = colour_pallette[1], linewidth = 0.25) +
   
   scale_fill_gradient2(low = "#FFFFFF", mid = colour_pallette[7], high = colour_pallette[5],
