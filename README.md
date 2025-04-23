@@ -30,11 +30,11 @@ Mass spectrometry analysis of phosphopproteomic changes following acute Greatwal
 Use data MS_prometaphase_C-604_vs_DMSO_hits.csv, MS_prometaphase_C-604_vs_DMSO.xlsx
 
 ### R-script_TCGA_data_download.Rmd
-A script used to retrieve GWL and B55a TCGA expression profiles, generating TCGA_processed_RNA-Seq_data.csv
+A script used to retrieve GWL and B55a TCGA expression profiles, generating TCGA_processed_RNA-Seq_data.csv  
 Use data TCGA_gene_list.xlsx
 
 ### R-script_TCGA_data_analysis.Rmd
-Analysis of TCGA expression profiles of GWL and B55a
+Analysis of TCGA expression profiles of GWL and B55a  
 Use data TCGA_gene_list.xlsx, TCGA_processed_RNA-Seq_data.csv
 
 ### R-script_WB_analysis_ENSA-P_EC50.Rmd
