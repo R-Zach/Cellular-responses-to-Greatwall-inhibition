@@ -1,0 +1,277 @@
+---
+title: "R-script_TCGA_analysis_RAW_data_download"
+output: html_document
+date: "2025-04-23"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Load packages 
+```{r}
+library(TCGAbiolinks)
+library(SummarizedExperiment)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(ggpubr)
+library(ggforce)
+library(ggExtra)
+library(ggtext)
+library(ggfortify)
+library(grid)
+library(gridExtra)
+library(ggridges)
+library(ggbeeswarm)
+library(ggsurvfit)
+library(survminer)
+library(survival)
+library(readxl)
+library(stringr)
+library(scales)
+```
+
+## Set working directory
+```{r}
+working_directory <- "/Users/rz73/Library/CloudStorage/OneDrive-UniversityofSussex/Submissions/Nature Communications (2025) - Cellular consequences of Greatwall inhibition/Supplementary code (testing)/R-script_TCGA_analysis"
+```
+
+## Downloading TCGA gene expression data
+https://www.bioconductor.org/packages/devel/bioc/vignettes/TCGAbiolinks/inst/doc/query.html
+```{r}
+setwd(working_directory)
+path_GDCdata <- paste(getwd(), "/GDCdata/", sep = "")
+
+list_projects <- c("TCGA-ACC", "TCGA-BLCA", "TCGA-BRCA",
+                   "TCGA-CESC", "TCGA-CHOL", "TCGA-COAD",
+                   "TCGA-DLBC", "TCGA-ESCA", "TCGA-GBM",
+                   "TCGA-HNSC", "TCGA-KICH", "TCGA-KIRC",
+                   "TCGA-KIRP", "TCGA-LAML", "TCGA-LGG",
+                   "TCGA-LIHC", "TCGA-LUAD", "TCGA-LUSC",
+                   "TCGA-MESO", "TCGA-OV", "TCGA-PAAD",
+                   "TCGA-PCPG", "TCGA-PRAD", "TCGA-READ",
+                   "TCGA-SARC", "TCGA-SKCM", "TCGA-STAD",
+                   "TCGA-TGCT", "TCGA-THCA", "TCGA-THYM",
+                   "TCGA-UCEC", "TCGA-UCS", "TCGA-UVM")
+
+for (p in list_projects) {
+  
+  print(paste("Downloading data for project", p, sep = " "))
+  
+  ### TCGA RNA-seq query
+  query_TCGA = GDCquery(
+    project = p,
+    data.type = "Gene Expression Quantification",
+    data.category = "Transcriptome Profiling",
+    experimental.strategy = "RNA-Seq",
+    workflow.type = "STAR - Counts")
+  
+  GDCdownload(query = query_TCGA, directory = path_GDCdata, method = "api", files.per.chunk = 10)
+  
+  ### TCGA clinical data query   
+    clinical_query <- GDCquery(
+      project = p,
+      data.category = "Clinical", 
+      data.type = "Clinical Supplement",
+      file.type = "xml")
+    
+  GDCdownload(query = clinical_query, directory = path_GDCdata, method = "api", files.per.chunk = 10)
+  
+}
+```
+
+## Associating RNA expression data with clinical survival data for the gene of interest
+```{r}
+### Setting the working directory
+setwd(working_directory)
+path_GDCdata <- paste(getwd(), "/GDCdata/", sep = "")
+### Establishing genes of interest (GOIs)
+GOIs <- c("PPP2R2A", "MASTL")
+
+for (GOI in GOIs) {
+  
+  TCGA_genes <- read_excel(paste(getwd(), "/data/", "TCGA_gene_list.xlsx", sep = ""))
+  TCGA_GOI <- dplyr::filter(TCGA_genes, gene_name == GOI)
+  ### Extracting the Ensembl id of the gene of interest (GOI)
+  GOI_ID <- TCGA_GOI$gene_id
+  ### Creating the directory to store the output data
+  dir.create(paste(getwd(), "/outputs/", GOI, "/expression and genome stability/", sep = ""), recursive = TRUE)
+  
+  ### Clinical studies of interest
+  list_projects <- c("TCGA-ACC", "TCGA-BLCA", "TCGA-BRCA",
+                     "TCGA-CESC", "TCGA-CHOL", "TCGA-COAD",
+                     "TCGA-DLBC", "TCGA-ESCA", "TCGA-GBM",
+                     "TCGA-HNSC", "TCGA-KICH", "TCGA-KIRC",
+                     "TCGA-KIRP", "TCGA-LAML", "TCGA-LGG",
+                     "TCGA-LIHC", "TCGA-LUAD", "TCGA-LUSC",
+                     "TCGA-MESO", "TCGA-OV", "TCGA-PAAD",
+                     "TCGA-PCPG", "TCGA-PRAD", "TCGA-READ",
+                     "TCGA-SARC", "TCGA-SKCM", "TCGA-STAD",
+                     "TCGA-TGCT", "TCGA-THCA", "TCGA-THYM",
+                     "TCGA-UCEC", "TCGA-UCS", "TCGA-UVM")
+  
+  for (p in list_projects) {
+    
+    tmp.project <- strsplit(p, split = "-")[[1]][2]
+    
+    if (paste(tmp.project, "_expression.csv", sep = "") %in% list.files(paste(working_directory, "/outputs/", GOI, "/expression and genome stability/", sep = ""))) {
+      
+      print(paste("Data for project", p, "already downloaded", sep = " "))
+      
+    } else {
+      
+      ### TCGA RNA-Seq query
+      query_TCGA = GDCquery(
+        project = p,
+        data.type = "Gene Expression Quantification",
+        data.category = "Transcriptome Profiling",
+        experimental.strategy = "RNA-Seq",
+        workflow.type = "STAR - Counts")
+        TCGA_data <- GDCprepare(query_TCGA)
+       
+      ### TCGA clinical data query   
+      clinical_query <- GDCquery(
+        project = p,
+        data.category = "Clinical", 
+        data.type = "Clinical Supplement",
+        file.type = "xml")
+          
+      data_sample <- data.frame(colData(TCGA_data)) %>%
+        distinct()
+  
+      present_columns <- c()
+      missing_columns <- c()
+      
+      if ("paper_genome_doublings" %in% colnames(data_sample)) {
+        present_columns <- c(present_columns, "paper_genome_doublings")
+      } else {
+        missing_columns <- c(missing_columns, "paper_genome_doublings")
+      }
+      if ("paper_ploidy" %in% colnames(data_sample)) {
+        present_columns <- c(present_columns, "paper_ploidy")
+      } else {
+        missing_columns <- c(missing_columns, "paper_ploidy")
+      }
+      if ("paper_Tumor.ploidy.from.ABSOLUTE" %in% colnames(data_sample)) {
+        present_columns <- c(present_columns, "paper_Tumor.ploidy.from.ABSOLUTE")
+      } else {
+        missing_columns <- c(missing_columns, "paper_Tumor.ploidy.from.ABSOLUTE")
+      }
+      if ("ensat_pathologic_stage" %in% colnames(data_sample)) {
+        present_columns <- c(present_columns, "ensat_pathologic_stage")
+      } else {
+        missing_columns <- c(missing_columns, "ensat_pathologic_stage")
+      }
+      if ("ajcc_pathologic_stage" %in% colnames(data_sample)) {
+        present_columns <- c(present_columns, "ajcc_pathologic_stage")
+      } else {
+        missing_columns <- c(missing_columns, "ajcc_pathologic_stage")
+      }
+      
+      if (length(missing_columns) > 0) {
+        
+        for (c in missing_columns) {
+          data_sample[c] <- NA
+        }
+      }
+      
+      data_sample <- data_sample %>%
+        dplyr::select(barcode, patient_barcode = patient, sample_type,
+                      ajcc_pathologic_stage, ensat_pathologic_stage,
+                      paper_ploidy, paper_Tumor.ploidy.from.ABSOLUTE, paper_genome_doublings)
+  
+      data_patient <- GDCprepare_clinic(clinical_query, "patient", directory = path_GDCdata) %>%
+        distinct() %>%
+        dplyr::select(patient_barcode = bcr_patient_barcode,
+                      gender,
+                      vital_status,
+                      days_to_last_follow_up = days_to_last_followup,
+                      days_to_death)
+      
+      data_follow_up <- GDCprepare_clinic(clinical_query, "follow_up", directory = path_GDCdata)
+      
+      if (nrow(GDCprepare_clinic(clinical_query, "follow_up", directory = path_GDCdata)) > 0) {
+  
+        data_follow_up <- data_follow_up %>%
+          group_by(bcr_patient_barcode) %>%
+          dplyr::filter(year_of_form_completion == max(year_of_form_completion)) %>%
+          dplyr::select(patient_barcode = bcr_patient_barcode,
+                        vital_status,
+                        days_to_last_follow_up = days_to_last_followup,
+                        days_to_death)
+        
+        data_clinical <- merge(dplyr::select(data_patient, patient_barcode, vital_status, days_to_last_follow_up, days_to_death),
+                               data_follow_up,
+                               all = TRUE) %>%
+          distinct() %>%
+          group_by(patient_barcode) %>%
+          mutate(max_days = ifelse(all(is.na(days_to_last_follow_up) & is.na(days_to_death)), 
+                                  NA_real_, 
+                                  max(days_to_last_follow_up, days_to_death, na.rm = TRUE))) %>%
+          arrange(patient_barcode, days_to_death == 0 & is.na(days_to_last_follow_up), desc(max_days)) %>%
+          dplyr::filter(row_number() == 1) %>%
+          dplyr::select(-max_days) %>%
+          ungroup()
+  
+      } else {
+  
+        data_clinical <- data_patient
+        
+      }
+      
+      data_clinical <- merge(
+        data_clinical,
+        dplyr::select(data_patient, patient_barcode, gender),
+        on = patient_barcode) %>%
+        merge(data_sample, on = patient_barcode)
+      
+      data_clinical <- dplyr::select(data_clinical, barcode, gender, sample_type,
+                                     ajcc_pathologic_stage, ensat_pathologic_stage,
+                                     vital_status, days_to_death, days_to_last_follow_up,
+                                     paper_ploidy, paper_Tumor.ploidy.from.ABSOLUTE, paper_genome_doublings)
+      
+      ### Extracting fragments per kilobase of transcript per million mapped reads (FPKM) values for GOI
+      data_GOI_expression <- data.frame(assays(TCGA_data)[["fpkm_unstrand"]])[GOI_ID, ]
+      data_GOI_expression <- mutate(data_GOI_expression, ensembl_id = rownames(data_GOI_expression)) %>%
+          gather(key = "barcode", value = "fpkm", 1:(length(.) - 1)) %>%
+          mutate(barcode = gsub("\\.", "-", barcode),
+                 patient_barcode = substr(barcode, 1, 12),
+                 project = strsplit(p, split = "-")[[1]][2],
+                 gene = GOI) %>%
+          merge(data_clinical, on = patient_barcode) %>%
+          dplyr::select(project, barcode, patient_barcode, gender, sample_type,
+                        ajcc_pathologic_stage, ensat_pathologic_stage,
+                        vital_status, days_to_death, days_to_last_follow_up,
+                        paper_ploidy, paper_Tumor.ploidy.from.ABSOLUTE, paper_genome_doublings,
+                        gene, ensembl_id, fpkm)
+      
+      ### Saving data
+      write.csv(data_GOI_expression, paste(getwd(), "/outputs/", GOI, "/expression and genome stability/", strsplit(p, split = "-")[[1]][2], "_expression.csv", sep = ""), row.names = FALSE)
+      } 
+  }
+}
+
+```
+
+## Importing raw RNA expression and survival data
+```{r warning=FALSE}
+### Setting the working directory
+setwd(working_directory)
+### Establishing GOI
+GOIs <- c("PPP2R2A", "MASTL")
+
+data_raw <- data.frame()
+
+for (g in GOIs) {
+
+  for (file in list.files(paste(getwd(), "/outputs/", g, "/expression and genome stability/" , sep = ""))) {
+    tmp.data <- read.csv(paste(getwd(), "/outputs/", g, "/expression and genome stability/" , file, sep = ""), sep = ",") %>%
+      mutate(gene_name = gene, paper_ploidy = as.character(paper_ploidy))
+
+    data_raw <- bind_rows(data_raw, tmp.data)
+  }
+}
+
+write.csv(data_raw, paste(getwd(), "/data/", "TCGA_processed_RNA-Seq_data.csv", sep = ""), row.names = FALSE)
+```

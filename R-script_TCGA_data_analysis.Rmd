@@ -1,0 +1,420 @@
+---
+title: "TCGA"
+output: html_document
+date: "2024-08-15"
+---
+
+## Load packages 
+```{r}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(ggpubr)
+library(ggforce)
+library(ggExtra)
+library(ggtext)
+library(ggfortify)
+library(grid)
+library(gridExtra)
+library(ggridges)
+library(ggbeeswarm)
+library(ggsurvfit)
+library(survminer)
+library(survival)
+library(readxl)
+library(stringr)
+library(scales)
+```
+
+## Establishing ggplot theme arguments
+```{r}
+graph_theme <- theme(
+  plot.margin = margin(b = 0.2, l = 0.2, t = 0.2, r = 0.2, unit = "lines"),
+  text = element_text(size = 1, family = "Arial"),
+  panel.spacing.y = unit(0.1, "lines"),
+  panel.spacing.x = unit(0.1, "lines"),
+  panel.border = element_rect(colour = "#000000", fill = NA, linewidth = 0.5),
+  panel.background = element_blank(),
+  panel.grid.major.y = element_blank(),
+  panel.grid.minor.y = element_blank(),
+  panel.grid.major.x = element_blank(),
+  panel.grid.minor.x = element_blank(),
+  strip.background = element_blank(),
+  strip.text.x = element_text(colour = "#000000", size = 6, margin = margin(b = 2, t = 2), vjust = 0, family = "Arial"),
+  strip.text.y = element_text(colour = "#000000", size = 6, margin = margin(l = 2), family = "Arial"),
+  strip.clip = "off",
+  axis.ticks.x = element_line(colour = "#000000", linewidth = 0.25),
+  axis.ticks.y = element_line(colour = "#000000", linewidth = 0.25),
+  axis.ticks.length = unit(0.1, "lines"),
+  axis.title.x = element_text(colour = "#000000", size = 6, margin = margin(t = 3), family = "Arial"),
+  axis.title.y = element_text(colour = "#000000", size = 6, margin = margin(r = 2), family = "Arial"),
+  axis.text.x = element_text(colour = "#000000", size = 6, margin = margin(t = 2), family = "Arial"),
+  axis.text.y = element_text(colour = "#000000", size = 6, margin = margin(r = 2), family = "Arial"),
+  plot.title = element_blank(),
+  legend.key = element_rect(fill = "#FFFFFF"),
+  legend.position = "none",
+  legend.justification = "left",
+  legend.key.width = unit(2, 'pt'),
+  legend.key.height = unit(2, 'pt'),
+  legend.text = element_text(colour = "#000000", size = 6, margin = margin(r = 1), family = "Arial"),
+  legend.margin = margin(r = 0, b = 0, l = 0, t = 0),
+  legend.title = element_blank())
+```
+
+## Establishing colour pallette
+```{r}
+colour_pallette <- c("#D4D3CF", "#DC6B83", "#75B1CE", "#D8C367", "#526C94", "#000000", "#ccdba2", "#889466", "#c6b2d1", "#654875")
+```
+
+## Set working directory
+```{r}
+path_data <- "/path/to/data/TCGA_processed_RNA-Seq_data.csv"
+path_results <- "/path/to/results/"
+```
+
+## Importing data
+```{r}
+data_raw <- read.csv(path_data, sep = ",")
+
+head(data_raw)
+```
+
+## Processing data
+```{r warning=FALSE}
+
+data_processed <- data_raw %>%
+  mutate(sample_type = case_when(sample_type == "Primary Blood Derived Cancer - Peripheral Blood" ~ "Primary Tumor",
+                                 sample_type == "Additional - New Primary" ~ "Primary Tumor",
+                                 .default = sample_type)) %>%
+  dplyr::filter(sample_type %in% c("Primary Tumor", "Solid Tissue Normal")) %>%
+  mutate(sample_type = factor(sample_type, levels = c("Solid Tissue Normal", "Primary Tumor"), labels = c("N", "T"))) %>%
+  group_by(project, sample_type) %>%
+  mutate(expression = case_when(fpkm <= quantile(fpkm, 0.5) ~ "Low", fpkm > quantile(fpkm, 0.5) ~ "High")) %>%
+  ungroup()
+
+head(data_processed)
+```
+
+## Plotting cancer-specific expression profiles for GOI
+```{r}
+GOIs <- c("MASTL", "PPP2R2A")
+
+for (GOI in GOIs) {
+  
+  data_graph <- data_processed %>% 
+    filter(gene_name == GOI)
+  
+  data_graph_expression_profiles_summary <- data_graph %>%
+    reframe(fpkm_median = median(fpkm),
+            .by = c(project, gene_name, sample_type))
+  
+  data_expression_profiles_normality <- data_graph %>%
+    group_by(project, gene_name, sample_type) %>%
+    dplyr::filter(n() >= 3) %>%
+    ungroup() %>%
+    reframe(shapiro_p = shapiro.test(fpkm)$p.value, .by = c(project, gene_name, sample_type))
+  
+  data_expression_profiles_stats <- data_graph %>%
+    dplyr::select(project, barcode, sample_type, gene_name, fpkm) %>%
+    spread(key = sample_type, value = fpkm) %>%
+    group_by(project, gene_name) %>%
+    group_split() %>%
+    lapply((function (data) {
+      
+      tmp.N <- data[["N"]][!(is.na(data[["N"]]))]
+      tmp.T <- data[["T"]][!(is.na(data[["T"]]))]
+      
+      if (length(tmp.N) < 3 | length(tmp.T) < 3) {
+        
+        tmp.output <- data.frame(project = unique(data$project), p = NA, mean_diff = NA)
+
+        } else {
+  
+        tmp.p <- wilcox.test(tmp.N, tmp.T, alternative = "two.sided", paired = FALSE)$p.value
+        tmp.output <- data.frame(project = unique(data$project),
+                                 gene_name = unique(data$gene_name),
+                                 p = tmp.p,
+                                 mean_diff = mean(tmp.T) - mean(tmp.N))
+      }
+      
+      return(tmp.output)})) %>%
+    
+    bind_rows() %>%
+    mutate(p_adj =  p.adjust(p, method = "BH"),
+           significance = case_when(p_adj < 0.00001 ~ "*****",
+                                    p_adj < 0.0001 ~ "****",
+                                    p_adj < 0.001 ~ "***",
+                                    p_adj < 0.01 ~ "**",
+                                    p_adj < 0.05 ~ "*",
+                                    p_adj >= 0.05 ~ "ns",
+                                    is.na(p) ~ "nd"))
+  
+  graph_expression_profiles <- ggplot() +
+    
+    geom_quasirandom(data = data_graph, aes(x = sample_type, y = fpkm, colour = sample_type),
+                     size = 0.75, alpha = 0.25, shape = 16) +
+    geom_point(data = data_graph_expression_profiles_summary, aes(x = sample_type, y = fpkm_median),
+               size = 0.75, stroke = 0.35, shape = 21, colour = "#000000", fill = "#FFFFFF") +
+    
+    geom_text(data = dplyr::filter(data_expression_profiles_stats, significance %in% c("nd", "ns")),
+              aes(x = 1.5, y = 1.1 * max(data_graph$fpkm), label = significance),
+              size = 6/.pt, colour = colour_pallette[1], family = "Arial") +
+    
+    geom_text(data = dplyr::filter(data_expression_profiles_stats, !(significance %in% c("nd", "ns")), mean_diff < 0),
+              aes(x = 1.5, y = 1.1 * max(data_graph$fpkm), label = significance),
+              size = 6/.pt, colour = colour_pallette[3], family = "Arial") +
+    
+    geom_text(data = dplyr::filter(data_expression_profiles_stats, !(significance %in% c("nd", "ns")), mean_diff > 0),
+              aes(x = 1.5, y = 1.1 * max(data_graph$fpkm), label = significance),
+              size = 6/.pt, colour = colour_pallette[2], family = "Arial") +
+    
+    scale_colour_manual(values = c(colour_pallette[3], colour_pallette[2])) +
+    scale_y_continuous(limits = c(0, 1.2 * max(data_graph$fpkm))) +
+    facet_wrap(~ project, nrow = 3) +
+    labs(x = "Tissue (N - Normal, T - Tumor)", y = paste(GOI, " expression (FPKM)", sep = "")) +
+    graph_theme
+  
+  ggsave(paste(path_results, GOI, "_graph_expression.pdf", sep = ""), graph_expression_profiles,
+         width = 85, height = 50 , units = "mm", device = cairo_pdf)
+}
+```
+
+## Processing the expression data
+```{r}
+model <- function(PPP2R2A, MASTL) {return(0.399 * MASTL / PPP2R2A + 0.406)}
+
+data_expression_processed = data_raw %>%
+  mutate(sample_type = case_when(sample_type == "Primary Blood Derived Cancer - Peripheral Blood" ~ "Primary Tumor", .default = sample_type)) %>%
+  filter(sample_type %in% c("Primary Tumor", "Solid Tissue Normal")) %>%
+  dplyr::select(barcode, project, gender, sample_type, gene_name, fpkm) %>%
+  spread(key = gene_name, value = fpkm) %>%
+  mutate(ED50_predicted = model(PPP2R2A, MASTL),
+         sample_type = case_when(sample_type == "Primary Tumor" ~ "T", sample_type == "Solid Tissue Normal" ~ "N"),
+         hit = ifelse(ED50_predicted < quantile(ED50_predicted, probs = 0.05), TRUE, FALSE))
+
+data_expression_processed_hits <- data_expression_processed %>%
+  filter(hit == TRUE) 
+
+data_expression_processed
+```
+
+## Establishing counts of tissues predicted to be hyper sensitive to Greatwall inhibition
+```{r}
+data_sensitive_tissues_counts <- data_expression_processed %>%
+  reframe(n = n(), .by = c(project, sample_type, hit)) %>%
+  group_by(project, sample_type) %>%
+  mutate(perc = n / sum(n)) %>%
+  ungroup()
+
+data_sensitive_tissues_counts
+```
+
+## Establishing significance of differences between tumour and normal tissues
+```{r}
+data_expression_profiles_stats <- data_expression_processed %>%
+  dplyr::select(project, barcode, sample_type, MASTL, PPP2R2A) %>%
+  gather(key = "gene", value = "fpkm", 4:5) %>%
+  spread(key = sample_type, value = fpkm) %>%
+  group_by(gene, project) %>%
+  group_split() %>%
+  lapply((function (data) {
+    
+    tmp.N <- data[["N"]][!(is.na(data[["N"]]))]
+    tmp.T <- data[["T"]][!(is.na(data[["T"]]))]
+    
+    if (length(tmp.N) < 3 | length(tmp.T) < 3) {
+      
+      tmp.output <- data.frame(project = unique(data$project), p = NA)
+    } else {
+      
+      tmp.p <- t.test(tmp.N, tmp.T, alternative = "two.sided", var.equal = FALSE)$p.value
+      tmp.output <- data.frame(project = unique(data$project), gene = unique(data$gene), p = tmp.p, mean_diff = mean(tmp.T) - mean(tmp.N))
+    }
+    
+    return(tmp.output)})) %>%
+  
+  bind_rows() %>%
+  mutate(significance = case_when(p < 0.00001 ~ "*****",
+                                  p < 0.0001 ~ "****",
+                                  p < 0.001 ~ "***",
+                                  p < 0.01 ~ "**",
+                                  p < 0.05 ~ "*",
+                                  p >= 0.05 ~ "ns",
+                                  is.na(p) ~ "nd"))
+
+data_expression_profiles_stats_processed <- data_expression_profiles_stats %>%
+  filter(significance != "nd") %>%
+  dplyr::select(project, gene, mean_diff) %>%
+  spread(key = gene, value = mean_diff) %>%
+  mutate(group = case_when(MASTL > 1 & PPP2R2A > 1 ~ "Group 1",
+                           MASTL > 1 & PPP2R2A < 1 ~ "Group 2",
+                           MASTL < 1 & PPP2R2A < 1 ~ "Group 3",
+                           MASTL < 1 & PPP2R2A < 1 ~ "Group 4"))
+
+data_expression_profiles_stats_processed
+```
+
+## Plotting mean FPKM differences between tumour and normal samples
+```{r}
+### Setting the working directory
+setwd(working_directory)
+
+data_graph <- data_expression_profiles_stats_processed
+data_graph_counts <- reframe(data_graph, n = n(), .by = group)
+
+graph_PPP2R2A_MASTL_mean_differences <- ggplot(data = data_graph, aes(x = MASTL, y = PPP2R2A, colour = group)) +
+  geom_hline(yintercept = 1, linewidth = 0.25, colour = colour_pallette[6]) +
+  geom_vline(xintercept = 1, linewidth = 0.25, colour = colour_pallette[6]) +
+  geom_point(shape = 16, size = 1.25, alpha = 1) +
+  
+  annotate(geom = "text", x = -3.5, y = 5, label = 0, size = 6/.pt, family = "Arial", vjust = 0.9, hjust = 0.1, colour =  colour_pallette[2]) +
+  annotate(geom = "text", x = 5, y = 5, label = 8, size = 6/.pt, family = "Arial", vjust = 0.9, hjust = 0.9, colour =  colour_pallette[3]) +
+  annotate(geom = "text", x = -3.5, y = -3.5, label = 8, size = 6/.pt, family = "Arial", vjust = 0, hjust = 0.1, colour =  colour_pallette[6]) +
+  annotate(geom = "text", x = 5, y = -3.5, label = 5, size = 6/.pt, family = "Arial", vjust = 0, hjust = 0.9, colour =  colour_pallette[5]) +
+  
+  scale_colour_manual(values = c(colour_pallette[3], colour_pallette[5], colour_pallette[1])) +
+  scale_x_continuous(limits = c(-3.5, 5)) +
+  scale_y_continuous(limits = c(-3.5, 5)) +
+  labs(x = "GWL (T-N)", y = "B55α (T-N)") +
+  
+  graph_theme
+
+ggsave(paste(getwd(), "/results/", "PPP2R2A_MASTL_mean_differences.pdf", sep = ""), graph_PPP2R2A_MASTL_mean_differences,
+       width = 22.5, height = 25 , units = "mm", device = cairo_pdf)
+```
+
+## Plotting MASTL ~ PPP2R2A scatterplot
+```{r warning=FALSE}
+### Setting the working directory
+setwd(working_directory)
+
+data_graph <- data_expression_processed
+data_graph_model <- data_expression_processed_hits
+
+graph_scatterplot_MASTL_PPP2R2A <- ggplot() +
+  
+  geom_point(data = data_graph, aes(x = MASTL, y = PPP2R2A, colour = ED50_predicted),
+             shape = 16, size = 0.35, alpha = 1) +
+  
+  geom_abline(slope = 5.656854249, colour = colour_pallette[6], linewidth = 0.25, linetype = "dashed") +
+  
+  annotate(geom = "text", x = 0, y = 54, label = "5%", size = 6/.pt, family = "Arial", hjust = 0.05, colour =  colour_pallette[6]) +
+  
+  scale_x_continuous(limits = c(0, 30), breaks = c(0, 15, 30)) +
+  scale_y_continuous(limits = c(0, 55), breaks = c(0, 15, 30, 45)) +
+  
+  scale_colour_gradientn(colours = c(colour_pallette[2], colour_pallette[4], colour_pallette[7], colour_pallette[3], colour_pallette[5]),
+                         values = seq(0, 1, 0.2),
+                         limits = c(0.4, 2),
+                         oob = oob_squish) +  
+
+  labs(x = "GWL FPKM", y = "B55α FPKM", colour = bquote(Predicted~ED[50])) +
+
+  graph_theme +
+  theme(panel.border = element_blank(),
+        plot.margin = margin(b = 0.2, l = 0.2, t = 0.35, r = 0.2, unit = "lines"),
+        axis.line = element_line(colour = "#000000", linewidth = 0.25),
+        legend.position = "right",
+        legend.justification = "center",
+        legend.key.width = unit(2.5, 'pt'),
+        legend.key.height = unit(8, 'pt'),
+        legend.text = element_text(colour = "#000000", size = 6, margin = margin(l = 2)),
+        legend.margin = margin(l = -10),
+        legend.spacing.x = unit(1, "pt"),
+        legend.title = element_blank())
+
+ggsave(paste(getwd(), "/results/", "scatterplot_MASTL_PPP2R2A.pdf", sep = ""), graph_scatterplot_MASTL_PPP2R2A,
+       width = 25, height = 25 , units = "mm", device = cairo_pdf)
+```
+
+## Plotting distribution of ED50 predictions
+```{r warning=FALSE}
+### Setting the working directory
+setwd(working_directory)
+
+data_graph <- data_expression_processed %>%
+  arrange(ED50_predicted) %>%
+  mutate(rank = 1:n(), hit = ifelse(ED50_predicted < quantile(ED50_predicted, probs = 0.05), TRUE, FALSE))
+
+graph_predicted_sensitivity_to_GWL_inhibition_distribution <- ggplot() +
+  geom_point(data = data_graph, aes(x = rank, y = ED50_predicted, colour = hit),
+             size = 0.1, position = position_jitter(0, 0.1), alpha = 1) +
+  annotate(geom = "text", x = 100, y = 1, label = "5% most sensitive", family = "Arial", size = 6/.pt, hjust = 0, colour = colour_pallette[2]) +
+  scale_x_continuous(expand = c(0.015, 0.015)) +
+  scale_y_continuous(expand = c(0.03, 0.03), trans = "log2") +
+  labs(x = "Rank", y = bquote(Model~"*ED"[50])) +
+
+  scale_colour_manual(values = c(colour_pallette[1], colour_pallette[2])) +
+  graph_theme +
+  theme(panel.border = element_blank(),
+        plot.margin = margin(b = 0.2, l = 0.2, t = 0.35, r = 0.2, unit = "lines"),
+        axis.line = element_line(colour = "#000000", linewidth = 0.25))
+
+ggsave(paste(getwd(), "/results/", "predicted_sensitivity_to_GWL_inhibition_distribution.pdf", sep = ""), graph_predicted_sensitivity_to_GWL_inhibition_distribution,
+       width = 35, height = 20 , units = "mm", device = cairo_pdf)
+```
+
+## Plotting proportions of highly sensitive tissues
+```{r warning=FALSE}
+### Setting the working directory
+setwd(working_directory)
+
+data_graph <- data_sensitive_tissues_counts %>%
+  mutate(perc = ifelse(sample_type == "N", - perc, perc))
+
+data_graph_observations <- data_graph %>%
+  reframe(n = sum(n), .by = c(project, sample_type)) %>%
+  complete(project, sample_type) %>%
+  replace(is.na(.), 0)
+
+graph_proportions <- ggplot() +
+  
+  geom_bar(data = data_graph, aes(x = project, y = perc, fill = sample_type, alpha = hit),
+           stat = "identity", position = "stack", width = 1) +
+  
+  geom_hline(yintercept = 0, colour = colour_pallette[6], linewidth = 0.25) +
+  geom_vline(xintercept = seq(0.5, 32.5, 1), colour = colour_pallette[6], linewidth = 0.25) +
+  
+  geom_text(data = filter(data_graph_observations, sample_type == "N", n != 0),
+            aes(x = project, y = -0.95, label = n),
+            size = 5/.pt, colour = colour_pallette[3], family = "Arial",
+            angle = -90, hjust = 1) +
+  
+  geom_text(data = filter(data_graph_observations, sample_type == "T", n != 0),
+            aes(x = project, y = 0.95, label = n),
+            size = 5/.pt, colour = colour_pallette[2], family = "Arial",
+            angle = -90, hjust = 0) +
+  
+  geom_text(data = filter(data_graph_observations, sample_type == "N", n == 0),
+            aes(x = project, y = -0.95, label = n),
+            size = 5/.pt, colour = colour_pallette[6], family = "Arial",
+            angle = -90, hjust = 1) +
+  
+  scale_fill_manual(values = c(colour_pallette[3], colour_pallette[2])) +
+  scale_alpha_manual(values = c(0.25, 1), labels = c("Within remaining 95%", "Within 5% predicted most sensitive")) +
+  scale_x_discrete(expand = c(0, 0)) +
+  scale_y_continuous(expand = c(0, 0),
+                     limits = c(-1, 1),
+                     breaks = c(-1, -0.5, 0, 0.5, 1),
+                     labels = c("100%", "50%", "0%", "50%", "100%"),
+                     sec.axis = sec_axis(~.*1, name = "", breaks = c(-0.5, 0.5), labels = c("N", "T"))) +
+  graph_theme +
+  theme(axis.text.x = element_text(colour = "#000000", size = 6, margin = margin(t = 2), angle = -90, hjust = 0, vjust = 0.5, family = "Arial"),
+        axis.text.y.right = element_text(colour = "#000000", size = 6, margin = margin(l = 2), family = "Arial"),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        axis.title.y.right = element_blank(),
+        legend.position = "top",
+        legend.justification = "left",
+        legend.key = element_blank(),
+        legend.key.width = unit(5.5, 'pt'),
+        legend.key.height = unit(5.5, 'pt'),
+        legend.text = element_text(colour = "#000000", size = 6, margin = margin(l = 1)),
+        legend.margin = margin(b = -10),
+        legend.title = element_blank()) +
+  
+  guides(fill = FALSE)
+
+ggsave(paste(getwd(), "/results/", "sensitive_groups_proportions.pdf", sep = ""), graph_proportions,
+       width = 80, height = 26 , units = "mm", device = cairo_pdf)
+```
