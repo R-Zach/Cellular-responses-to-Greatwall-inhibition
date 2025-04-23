@@ -38,7 +38,7 @@ library(rstatix)
 library(effsize)
 ```
 
-## Establishing paths to data and results folders
+## Establishing paths to the data file and the folder to store results
 ```{r}
 path_data <- "path/to/IF_single-cell_siB55a-d_siGWL.csv"
 path_results <- "path/to/results/"
