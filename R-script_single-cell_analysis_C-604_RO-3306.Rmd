@@ -42,10 +42,10 @@ library(pracma)
 library(effsize)
 ```
 
-## Establishing paths to data and results folders
+## Establishing paths to the data file and the folder to store results
 ```{r}
-path_data <- "/Users/rz73/Library/CloudStorage/OneDrive-UniversityofSussex/Submissions/Nature Communications (2025) - Cellular consequences of Greatwall inhibition/Supplementary code (testing)/R-script_IF_single-cell_analysis_C-604_RO-3306/data/IF_single-cell_C-604_RO-3306.csv"
-path_results <- "/Users/rz73/Library/CloudStorage/OneDrive-UniversityofSussex/Submissions/Nature Communications (2025) - Cellular consequences of Greatwall inhibition/Supplementary code (testing)/R-script_IF_single-cell_analysis_C-604_RO-3306/results/"
+path_data <- "/path/to/IF_single-cell_C-604_RO-3306.csv"
+path_results <- "/path/to/results/"
 ```
 
 ## Establishing ggplot theme arguments
