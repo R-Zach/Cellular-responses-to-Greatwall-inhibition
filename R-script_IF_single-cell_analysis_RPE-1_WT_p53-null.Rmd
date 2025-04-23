@@ -39,12 +39,13 @@ library(drc)
 library(modelr)
 library(readxl)
 library(pracma)
+library(effsize)
 ```
 
-## Establishing paths to data and results folders
+## Establishing paths to the data file and the folder to store results
 ```{r}
-path_data <- ### Path to IF_single-cell_RPE-1_WT_p53-null.csv
-path_results <- ### Path to an export folder
+path_data <- "/path/to/IF_single-cell_RPE-1_WT_p53-null.csv"
+path_results <- "/path/to/results/"
 ```
 
 ## Establoshing ggplot theme arguments
@@ -126,6 +127,51 @@ fun_normalise <- function (data, values, ref, bins = 100) {
 }
 ```
 
+## Establishing a function to compute statistics
+```{r}
+fun_stats <- function (data, group_vars = c("cell_line", "C604", "RO3306"), val = "prop") {
+  
+  data_nested <- data %>%
+    group_by(across(all_of(group_vars))) %>%
+    nest()
+  
+  data_output <- data.frame()
+  
+  for (i in 1:nrow(data_nested)) {
+    data_group_1 <- data_nested[i, ] %>%
+      unite(col = "group", group_vars) %>%
+      unnest(data)
+    
+    for (i in 1:nrow(data_nested)) {
+      data_group_2 <- data_nested[i, ] %>%
+        unite(col = "group", group_vars) %>%
+        unnest(data)
+      
+      ## Normality test
+      shapiro_1 <- shapiro.test(data_group_1[[val]])$p.value
+      shapiro_2 <- shapiro.test(data_group_2[[val]])$p.value
+      ## Cohen size effect
+      cohen_d <- cohen.d(data_group_1[[val]], data_group_2[[val]])$estimate
+      ## t-test
+      t <- t.test(data_group_1[[val]], data_group_2[[val]], alternative = "two.sided", paired = FALSE, var.equal = TRUE)$p.value
+      ## Wilcoxon test
+      wilcoxon <- wilcox.test(data_group_1[[val]], data_group_2[[val]], alternative = "two.sided", paired = FALSE)$p.value
+      
+      data_results <- data.frame(group_1 = unique(data_group_1$group),
+                                 group_2 = unique(data_group_2$group),
+                                 shapiro_1 = shapiro_1, 
+                                 shapiro_2 = shapiro_2,
+                                 cohen_d = cohen_d,
+                                 ttest_p = t,
+                                 wilcoxon_p = wilcoxon)
+      
+      data_output <- bind_rows(data_output, data_results)
+    }
+  }
+  return(data_output)
+}
+```
+
 ## Establishing a function to establish density of points on a scatter plot
 ```{r}
 get_density <- function(x, y, ...) {
@@ -155,7 +201,7 @@ head(data_raw)
 
 ## Normalising data
 ```{r}
-data_normalised = data_raw2 %>%
+data_normalised = data_raw %>%
 
   reframe(nuclei_count = n(),
           nuclei_area = sum(area_nucleus),
@@ -193,6 +239,14 @@ data_normalised = data_raw2 %>%
 head(data_normalised)
 ```
 
+## Establishing counts of analysed cells
+```{r}
+data_cell_counts <- data_normalised %>%
+  filter(cell_cycle != "Debris") %>%
+  reframe(count = n(), .by = c(experiment, cell_line, condition)) %>%
+  filter(condition %in% c(0, 2))
+```
+
 ## Establishing proportions of cell cycle groups
 ```{r}
 data_cell_cycle_proportions <- data_normalised %>%
@@ -209,6 +263,38 @@ data_cell_cycle_proportions <- data_normalised %>%
 
 head(data_cell_cycle_proportions)
 ```
+
+## Computing statistics for the cell cycle analysis
+```{r}
+data_stats_cell_cycle <- data_cell_cycle_proportions %>%
+  filter(condition %in% c(0, 2), cell_cycle %in% c("4N", "8N+")) %>%
+  complete(experiment, genotype, condition) %>%
+  replace(is.na(.), 0) %>%
+  group_by(cell_cycle) %>%
+  group_split() %>%
+  lapply((function (data) {
+    
+    tmp.cell.cycle <- unique(data$cell_cycle)
+    statistics <- fun_stats(data, group_vars = c("genotype", "condition"), val = "prop") %>%
+      mutate(cell_cycle = tmp.cell.cycle)
+    return(statistics)
+
+  })) %>%
+  bind_rows() %>%
+  filter(group_1 != group_2) 
+
+data_stats_cell_cycle_subset <- data_stats_cell_cycle %>%
+  separate(group_1, into = c("cell_line_1", "C604_1"), sep = "_", remove = FALSE) %>%
+  separate(group_2, into = c("cell_line_2", "C604_2"), sep = "_", remove = FALSE) %>%
+  filter(cell_line_1 == cell_line_2, C604_1 == 0) %>%
+  mutate(shapiro_1_adj = p.adjust(shapiro_1, method = "BH"),
+         shapiro_2_adj = p.adjust(shapiro_2, method = "BH"),
+         ttest_p_adj = p.adjust(ttest_p, method = "BH"),
+         wilcoxon_p_adj = p.adjust(wilcoxon_p, method = "BH"))
+
+data_stats_cell_cycle_subset
+```
+
 ## Establishing proportions of p21-positive cells
 ```{r}
 data_p21_proportions <- data_normalised %>%
@@ -227,29 +313,9 @@ data_p21_proportions <- data_normalised %>%
 data_p21_proportions
 ```
 
-## Establishing proportions of multinucleated cells
-```{r}
-data_multinucleated_proportions <- data_normalised %>%
-  filter(cell_cycle != "Debris") %>%
-  mutate(nuclei = case_when(nuclei_count == 1 ~ "1",
-                            nuclei_count == 2 ~ "2",
-                            nuclei_count > 2 ~ "3+")) %>%
-  reframe(count = n(), .by = c(experiment, cell_line, condition, nuclei)) %>%
-  group_by(experiment, cell_line, condition) %>%
-  mutate(prop = 100 * count / sum(count)) %>%
-  ungroup() %>%
-  dplyr::select(-count) %>%
-  spread(key = nuclei, value = prop) %>%
-  replace(is.na(.), 0) %>%
-  gather(key = nuclei, value = prop, 4:6) %>%
-  separate(col = cell_line, into = c("cell_line", "genotype"), sep = "_") %>%
-  filter(condition %in% c("0", "2"))
-
-data_multinucleated_proportions
-```
-
 ## Establishing spatial densities of data points in EdU ~ Hoechst scatterplots
 ```{r}
+set.seed(123)
 data_normalised_subset_random <- data_normalised %>%
   filter(condition %in% c("0", "2")) %>%
   
@@ -354,59 +420,55 @@ graph_cell_cycle <- plot_grid(graph_marginal_Hoechst,
 ggsave(paste(path_results, "graph_cell_cycle_scatterplot.pdf", sep = ""), graph_cell_cycle,
        width = 35, height = 42.5, units = "mm", device = cairo_pdf)
 ```
-
 ## Plotting p21 intensity distributions
 ```{r}
 data_graph <- data_normalised_subset_random %>%
   filter(cell_cycle != "Debris") %>%
-  mutate(cell_cycle = factor(cell_cycle, levels = c("Debris", "2N", "S", "4N", "8N+")),
-         genotype = factor(genotype, levels = c("WT", "p53KO"), labels = c("WT", "p53-null")),
-         dataset = "GWL inhibitor C-604 (µM)")
+  mutate(genotype = factor(genotype, levels = c("WT", "p53KO"), labels = c("WT", "p53-null")),
+         dataset = "GWL inhibitor C-604 (µM)",
+         cell_cycle = factor(cell_cycle, levels = c("2N", "S", "4N", "8N+")))
 
 data_graph_summary <- data_graph %>%
   reframe(p21_median = median(p21_mean_norm), .by = c(experiment, cell_line, genotype, condition, cell_cycle, dataset)) %>%
-  mutate(genotype = factor(genotype, levels =  c("WT", "p53-null")))
+  mutate(genotype = factor(genotype, levels =  c("WT", "p53-null")),
+         cell_cycle = factor(cell_cycle, levels = c("2N", "S", "4N", "8N+")))
 
-list_treatments <- unique(data_graph$condition)
-data_stats <- data.frame()
+data_graph_stats_p21 <- data_graph_summary %>%
+  filter(condition %in% c(0, 2)) %>%
+  complete(experiment, cell_line, genotype, condition, cell_cycle) %>%
+  replace(is.na(.), 0) %>%
+  group_by(cell_cycle) %>%
+  group_split() %>%
+  lapply((function (data) {
+    
+    tmp.cell.cycle <- unique(data$cell_cycle)
+    statistics <- fun_stats(data, group_vars = c("cell_line", "genotype", "condition"), val = "p21_median") %>%
+      mutate(cell_cycle = tmp.cell.cycle)
+    return(statistics)
 
-for (l in unique(data_graph_summary$genotype)) {
-  for (t in list_treatments[list_treatments != "0"]) {
-    for (c in unique(data_graph_summary$cell_cycle)) {
-      
-      tmp.data <- filter(data_graph_summary,
-                         genotype == l,
-                         condition %in% c("0", t),
-                         cell_cycle == c) %>%
-        
-        dplyr::select(dataset, experiment, cell_line, genotype, condition, cell_cycle, p21_median) %>%
-        spread(key = condition, value = p21_median)
+  })) %>%
+  bind_rows() %>%
+  filter(group_1 != group_2)
 
-        tmp.stats <- t.test(tmp.data[[7]], tmp.data[[6]],
-                            alternative = "two.sided",
-                            paired = FALSE,
-                            var.equal = TRUE)
-        
-        tmp.results <- data.frame(genotype = l,
-                                cell_line = unique(tmp.data$cell_line),
-                                cell_cycle = c,
-                                condition = t,
-                                p = tmp.stats$p.value)
-      
-        data_stats <- bind_rows(data_stats, tmp.results)
-    }
-  }
-}
-
-data_stats <- data_stats %>%
-  mutate(significance = case_when(p < 0.001 ~ "***",
+data_graph_stats_p21_subset <- data_graph_stats_p21 %>%
+  separate(group_1, into = c("cell_line_1", "genotype_1", "condition_1"), sep = "_", remove = FALSE) %>%
+  separate(group_2, into = c("cell_line_2", "genotype_2", "condition_2"), sep = "_", remove = FALSE) %>%
+  filter(genotype_1 == genotype_2, condition_1 == 0) %>%
+  mutate(shapiro_1_adj = p.adjust(shapiro_1, method = "BH"),
+         shapiro_2_adj = p.adjust(shapiro_2, method = "BH"),
+         ttest_p_adj = p.adjust(ttest_p, method = "BH"),
+         wilcoxon_p_adj = p.adjust(wilcoxon_p, method = "BH"),
+         p = ttest_p_adj,
+         significance = case_when(p < 0.001 ~ "***",
                                   p < 0.01 ~ "**",
                                   p < 0.05 ~ "*",
                                   .default = "ns"),
          
          cell_cycle = factor(cell_cycle, levels = c("2N", "S", "4N", "8N+")),
          dataset = "GWL inhibitor C-604 (µM)",
-         genotype = factor(genotype, levels =  c("WT", "p53-null")))
+         genotype = factor(genotype_2, levels =  c("WT", "p53-null")),
+         condition = condition_2,
+         cell_line = cell_line_2)
 
 graph_marginal_p21 <- ggplot(data = data_graph, aes(x = p21_mean_norm, y = condition)) +
   
@@ -444,13 +506,13 @@ graph_p21_points <- ggplot() +
              size = 0.75, stroke = 0.25, position = position_dodge(0.35),
              fill = "#FFFFFF", colour = colour_pallette[6]) +
   
-  geom_text(data = filter(data_stats, significance != "ns"), 
+  geom_text(data = filter(data_graph_stats_p21_subset, significance != "ns"), 
             aes(x = 4.5, y = cell_cycle, label = significance, colour = cell_cycle), size = 5.5/.pt,
             angle = -90, family = "Arial") +
   
-  geom_text(data = filter(data_stats, significance == "ns"), 
-            aes(x = 4.9, y = cell_cycle, label = significance), size = 5/.pt, colour = colour_pallette[1],
-            angle = -90, family = "Arial") +
+  #geom_text(data = filter(data_graph_stats_p21_subset, significance == "ns"), 
+            #aes(x = 4.9, y = cell_cycle, label = significance), size = 5/.pt, colour = colour_pallette[1],
+            #angle = -90, family = "Arial") +
   
   scale_shape_manual(values = c(21, 22, 24)) +
   scale_colour_manual(values = c(colour_pallette[2], colour_pallette[3], colour_pallette[4], colour_pallette[5], colour_pallette[6])) +
@@ -494,18 +556,6 @@ graph_p21 <- plot_grid(graph_marginal_p21,
 ggsave(paste(path_results, "graph_p21_points_distributions.pdf", sep = ""), graph_p21,
        width = 35, height = 42.5, units = "mm", device = cairo_pdf)
 ```
-
-## Creating a composite scatterplot
-```{r}
-graph_composite <- plot_grid(
-  graph_cell_cycle, graph_p21,
-  ncol = 2, nrow = 1,
-  align = "hv")
-
-ggsave(paste(path_results, "graph_scatterplots_composite.pdf", sep = ""), graph_composite,
-       width = 70, height = 42.5, units = "mm", device = cairo_pdf)
-```
-
 ## Plotting proportions of 2N, S, 4N and 8N+ cell cycle groups in cells treated with C-604 only
 ```{r}
 data_graph <- data_cell_cycle_proportions %>%
@@ -602,7 +652,7 @@ ggsave(paste(path_results, "graph_cell_cycle_proportions.pdf", sep = ""), graph_
        width = 25, height = 28.5, units = "mm", device = cairo_pdf)
 ```
 
-## Plotting proportions of 2N, S, 4N and 8N+ cell cycle groups in cells treated with C-604 only
+## Plotting proportions of p21-positive cells
 ```{r}
 data_graph <- data_p21_proportions %>%
   complete(experiment, cell_line, condition, p21) %>%
