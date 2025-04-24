@@ -1,0 +1,293 @@
+---
+title: "Colony Formation Assay Analysis"
+output: html_document
+date: "2023-06-02"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Loading Libraries
+```{r message=FALSE, warning=FALSE, paged.print=FALSE}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(ggforce)
+library(ggExtra)
+library(grid)
+library(gridExtra)
+library(ggridges)
+library(cowplot)
+library(gplots)
+library(lattice)
+library(ggthemes)
+library(scales)
+library(seqinr)
+library(tidyverse)
+library(Dict)
+library(readxl)
+library(rstatix)
+library(drc)
+library(modelr)
+library(readxl)
+```
+
+## Establoshing ggplot theme arguments
+```{r}
+graph_theme <- theme(
+  plot.margin = margin(b = 0.2, l = 0.2, t = 0.2, r = 0.2, unit = "lines"),
+  text = element_text(size = 1, family = "Arial"),
+  panel.spacing.y = unit(0.54, "mm"),
+  panel.spacing.x = unit(0.54, "mm"),
+  panel.border = element_rect(colour = "#000000", fill = NA, linewidth = 0.5),
+  panel.background = element_blank(),
+  panel.grid.major.y = element_blank(),
+  panel.grid.minor.y = element_blank(),
+  panel.grid.major.x = element_blank(),
+  panel.grid.minor.x = element_blank(),
+  strip.background = element_blank(),
+  strip.text.x = element_text(colour = "#000000", size = 6, margin = margin(b = 2, t = 2), family = "Arial"),
+  strip.text.y = element_text(colour = "#000000", size = 6, margin = margin(l = 2), family = "Arial"),
+  strip.clip = "off",
+  axis.ticks.x = element_line(colour = "#000000", linewidth = 0.35),
+  axis.ticks.y = element_line(colour = "#000000", linewidth = 0.35),
+  axis.ticks.length = unit(0.1, "lines"),
+  axis.title.x = element_text(colour = "#000000", size = 6, margin = margin(t = 3), family = "Arial"),
+  axis.title.y = element_text(colour = "#000000", size = 6, margin = margin(r = 2), family = "Arial"),
+  axis.text.x = element_text(colour = "#000000", size = 6, margin = margin(t = 2), family = "Arial"),
+  axis.text.y = element_text(colour = "#000000", size = 6, margin = margin(r = 2), family = "Arial"),
+  plot.title = element_blank(),
+  legend.key = element_rect(fill = "#FFFFFF"),
+  legend.position = "none",
+  legend.justification = "left",
+  legend.key.width = unit(2, 'pt'),
+  legend.key.height = unit(2, 'pt'),
+  legend.text = element_text(colour = "#000000", size = 6, margin = margin(r = 1), family = "Arial"),
+  legend.margin = margin(r = 0, b = 0, l = 0, t = 0),
+  legend.title = element_blank())
+```
+
+## Establishing colour pallette
+```{r}
+colour_pallette <- c("#D4D3CF", "#DC6B83", "#75B1CE", "#D8C367", "#526C94", "#000000", "#ccdba2", "#889466")
+```
+
+## Establishing paths to the data file and the folder to store results
+```{r}
+path_data <- "/path/to/CF_C-604_cytostatic_effect.xlsx"
+path_results <- "/path/to/results/"
+```
+
+## Establishing cell line groups 
+```{r}
+data_cell_line_groups <- data.frame(
+  
+  cell_line = c("HCC1143", "HCC1395", "HCC1937", "NCI-H226", "NCI-H2228", "769-P", "U2OS", "MM231", "RPE-1", "HT-1080", "HeLa", "BT-549"),
+  group = c("Breast", "Breast", "Breast", "Lung", "Lung", "Kidney", "Bone", "Breast", "Eye (Non-Cancerous)", "Soft tissue", "Cervix", "Breast"))
+
+data_cell_line_groups
+```
+
+## Importing data
+```{r}
+data_raw <- read_excel(path_data) %>%
+  group_by(experiment, treatment, cell_line) %>%
+  mutate(colony_count_norm = (colony_count / max(colony_count)) * 100,
+         cell_line = ifelse(cell_line == "RPE-1_WT", "RPE-1", cell_line)) %>%
+  ungroup()
+
+data_summary <- data_raw %>%
+  reframe(colony_count_norm_mean = mean(colony_count_norm),
+          colony_count_norm_sd = sd(colony_count_norm),
+          .by = c(treatment, cell_line, condition))
+
+head(data_raw)
+head(data_summary)
+```
+
+## Establishing ED50 values
+```{r}
+drm.func <- function (x) {
+  drm(colony_count_norm ~ condition, 
+      fct = LL.4(),
+      data = x,
+      robust = "median"
+      )
+}
+
+coefs.fun <- function (x) {coef(x) %>% tidy}
+graphs.fun <- function (x) {plot(x)[1:2]}
+
+data_colony_counts_models <- data_raw %>%
+  filter(condition %in% c(0, 0.125, 0.25, 0.5, 1, 2, 4, 8)) %>%
+  group_by(cell_line, experiment) %>%
+  nest() %>%
+  mutate(dr_model = map(data, drm.func),
+         coefs = map(dr_model, coefs.fun),
+         graphs = map(dr_model, graphs.fun))
+
+data_colony_counts_ED_values <- data_colony_counts_models %>%
+  group_by(cell_line, experiment) %>%
+  group_split() %>%
+  lapply((function(data, ED_values = c(50)) {
+    tmp.cell.line <- data$cell_line
+    tmp.experiment <- data$experiment
+    tmp.model <- data$dr_model[[1]]
+    tmp.output <- ED(tmp.model, respLev = ED_values, type = "relative") %>%
+      data.frame() %>%
+      mutate(cell_line = tmp.cell.line, experiment = tmp.experiment) %>%
+      rownames_to_column("ED") %>%
+      mutate(ED = ED_values)
+    return(tmp.output)
+  })) %>%
+  bind_rows() %>%
+  dplyr::select(experiment, cell_line, ED50 = Estimate) %>%
+  merge(data_cell_line_groups, on = cell_line)
+
+write.csv(data_colony_counts_ED_values, paste(path_results, "Clonogenics_ED50_data_raw.csv"), row.names = FALSE)
+
+data_colony_counts_ED_values <- data_colony_counts_ED_values %>%
+  reframe(ED50_mean = mean(ED50), ED50_sd = sd(ED50), .by = c(cell_line)) %>%
+  arrange(desc(ED50_mean)) %>%
+  merge(data_cell_line_groups, on = cell_line) %>%
+  mutate(label = paste(round(ED50_mean, 2), round(ED50_sd, 2), sep = " ± "))
+
+write.csv(data_colony_counts_ED_values, paste(path_results, "Clonogenics_ED50_data_means.csv"), row.names = FALSE)
+
+data_colony_counts_coefficients <- data_colony_counts_models %>%
+  dplyr::select(experiment, cell_line, coefs) %>%
+  unnest(coefs) %>%
+  mutate(names = case_when(names == "b:(Intercept)" ~ "slope",
+                           names == "c:(Intercept)" ~ "lower limit",
+                           names == "d:(Intercept)" ~ "upper limit",
+                           names == "e:(Intercept)" ~ "ED50")) %>%
+  spread(key = names, value = x) %>%
+  arrange(desc(ED50)) %>%
+  ungroup()
+
+data_colony_counts_models_graphs <- data_colony_counts_models %>%
+  group_by(cell_line, experiment) %>%
+  group_split() %>%
+  lapply((function(data) {
+    
+    tmp.cell.line <- data$cell_line
+    tmp.experiment <- data$experiment
+    tmp.model <- data[[1, "graphs"]][[1]] %>%
+      mutate(cell_line = tmp.cell.line, experiment = tmp.experiment) %>%
+      dplyr::select(experiment, cell_line, condition, colony_count_norm = "1")
+    
+    return(tmp.model)
+
+  })) %>%
+  bind_rows() %>%
+  reframe(colony_count_norm_mean = mean(colony_count_norm), colony_count_norm_sd = sd(colony_count_norm), .by = c(cell_line, condition))
+
+data_colony_counts_ED_values
+```
+
+## Plotting survival curves
+```{r}
+list_cell_line <- arrange(data_colony_counts_ED_values, -ED50_mean)$cell_line
+
+data_graph_survival <- data_raw %>%
+  filter(cell_line %in% list_cell_line,
+         condition %in% c(0, 0.25, 0.5, 1, 2, 4)) %>%
+  mutate(cell_line = factor(cell_line, levels = list_cell_line),
+         condition = ifelse(condition == 0, 0.01, condition))
+
+data_graph_models <- data_colony_counts_models_graphs %>%
+    filter(cell_line %in% list_cell_line) %>%
+    mutate(cell_line = factor(cell_line, levels = list_cell_line))
+  
+graph_colony_survival <- ggplot(data_graph_survival) +
+  
+  geom_ribbon(data = data_graph_models,
+              aes(x = condition, ymin = colony_count_norm_mean - colony_count_norm_sd, ymax = colony_count_norm_mean + colony_count_norm_sd),
+              fill = colour_pallette[2], alpha = 0.5) +
+  
+  geom_line(data = data_graph_models,
+            aes(x = condition, y = colony_count_norm_mean),
+            linewidth = 0.5, colour = colour_pallette[2]) +
+
+  geom_point(data = data_graph_survival,
+             aes(x = condition, y = colony_count_norm),
+             size = 1.75, stroke = 0.35, shape = 21, fill = colour_pallette[3], colour = "#FFFFFF",
+             alpha = 1) +
+  
+  scale_x_continuous(expand = c(0.05, 0.05), breaks = c(0.01, 1, 2, 3, 4), labels = c(0, 1, 2, 3, 4), limits = c(0, 4)) +
+  scale_y_continuous(expand = c(0.05, 0.05), breaks = c(0, 25, 50, 75, 100), limits = c(-5, 105)) +
+  facet_grid(cell_line ~ .) +
+  labs(x = "C-604 (µM)", y = "Colony count (%)") +
+  graph_theme
+
+ggsave(paste(path_results, "graph_survival_curves_3d.pdf", sep = ""), graph_colony_survival,
+       width = 22.5, height = 130, units = "mm", device = cairo_pdf)
+```
+
+## Plotting ED50 values (HCC1395, U2OS, RPE-1, MM231, HeLa, BT-549)
+```{r}
+list_cell_line = arrange(data_colony_counts_ED_values, -ED50_mean)$cell_line
+
+data_graph_ED50 <- data_colony_counts_ED_values %>%
+  filter(cell_line %in% list_cell_line) %>%
+  mutate(cell_line = factor(cell_line, levels = list_cell_line))
+
+graph_ED50 <- ggplot(data_graph_ED50) +
+  
+  geom_bar(aes(x = cell_line, y = ED50_mean),
+           stat = "identity", position = "identity", colour = colour_pallette[6], fill = colour_pallette[6],
+           linewidth = 0.35, alpha = 1, width = 0.65) +
+  
+  geom_errorbar(aes(x = cell_line,
+                    ymin = ED50_mean,
+                    ymax = ED50_mean + ED50_sd),
+                width = 0.5, linewidth = 0.35, colour = colour_pallette[6]) +
+  
+  scale_x_discrete(expand = c(0.05, 0.05)) +
+  scale_y_continuous(expand = c(0, 0), limits = c(0, 2.6)) +
+  coord_flip() +
+  labs(x = "", y = bquote(ED[50]~"(µM)")) +
+  graph_theme +
+  theme(
+    axis.text.x = element_text(colour = "#000000", size = 6, margin = margin(t = 2), angle = -90, hjust = 0, vjust = 0.5, family = "Arial"),
+    plot.margin = margin(b = 0.2, l = 0.3, t = 0.6, r = 0.2, unit = "lines"),
+    axis.title.y = element_text(colour = "#000000", size = 6, margin = margin(r = 5)),
+    axis.line.x = element_line(colour = "#000000", linewidth = 0.35),
+    axis.line.y = element_line(colour = "#000000", linewidth = 0.35),
+    panel.border = element_blank(),
+    panel.grid.major.y = element_blank(),
+    panel.grid.major.x = element_blank())
+
+ggsave(paste(path_results, "graph_ED50_3d.pdf", sep = ""), graph_ED50,
+       width = 30, height = 45 , units = "mm", device = cairo_pdf)
+```
+
+## Plotting ED50 values in cancer groups
+```{r}
+list_cell_line = data_colony_counts_ED_values$cell_line
+list_groups = c("Eye (Non-Cancerous)", "Cervix", "Soft tissue",  "Bone", "Kidney", "Lung", "Breast")
+
+data_graph <- data_colony_counts_ED_values %>%
+  mutate(cell_line = factor(cell_line, levels = list_cell_line),
+         group = factor(group, levels = list_groups))
+
+graph_ED50_grouped <- ggplot() +
+  
+  geom_point(data = data_graph,
+             aes(x = group, y = ED50_mean),
+             size = 1.75, stroke = 0.35, shape = 21, fill = colour_pallette[6], colour = "#FFFFFF",
+             alpha = 1) +
+  
+  geom_vline(xintercept = c(1.5, 2.5, 3.5, 4.5, 5.5, 6.5), colour = colour_pallette[6], linewidth = 0.25) +
+  scale_y_continuous(expand = c(0.05, 0.05), breaks = c(0, 0.5, 1, 1.5, 2), labels = c("0", "0.5", "1", "1.5", "2")) +
+  
+  labs(x = "", y = bquote(Mean~ED[50]~"(µM)")) +
+  
+  coord_flip() +
+  graph_theme
+  
+  
+ggsave(paste(path_results, "graph_ED50_3d_grouped.pdf", sep = ""), graph_ED50_grouped,
+       width = 40, height = 22 , units = "mm", device = cairo_pdf)
+```
