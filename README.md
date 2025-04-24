@@ -14,7 +14,7 @@ IF microscopy analysis of cellular responses to C-604 and MKI-2 treatment
 Use data IF_single-cell_C-604_vs_MKI-2.csv
 
 ### R-script_IF_single-cell_analysis_C-604_RO-3306.Rmd
-IF microscopy analysis of cellular responses to Greatwall and Cdk1 inhibition
+IF microscopy analysis of cellular responses to Greatwall and Cdk1 inhibition  
 Use data IF_single-cell_C-604_RO-3306.csv
 
 ### R-script_IF_single-cell_analysis_off-target_siRNAs.Rmd
