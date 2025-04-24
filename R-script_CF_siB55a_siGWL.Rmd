@@ -1,0 +1,162 @@
+---
+title: "GWL inhibition (Colony Formation, siMASTL and siPPP2R2A)"
+output: html_document
+date: "2023-10-31"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Loading Libraries
+```{r message=FALSE, warning=FALSE, paged.print=FALSE}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(ggforce)
+library(ggExtra)
+library(grid)
+library(gridExtra)
+library(ggridges)
+library(cowplot)
+library(gplots)
+library(lattice)
+library(ggthemes)
+library(scales)
+library(seqinr)
+library(tidyverse)
+library(Dict)
+library(readxl)
+```
+
+## Establoshing ggplot theme arguments
+```{r}
+graph_theme <- theme(
+  plot.margin = margin(b = 0.2, l = 0.2, t = 0.2, r = 0.2, unit = "lines"),
+  text = element_text(size = 1),
+  panel.spacing.y = unit(0.03, "lines"),
+  panel.spacing.x = unit(0.03, "lines"),
+  panel.border = element_rect(colour = "#000000", fill = NA, linewidth = 0.35),
+  panel.background = element_blank(),
+  panel.grid.major.y = element_line(colour = "#D4D3CF", linewidth = 0.25),
+  panel.grid.minor.y = element_blank(),
+  panel.grid.major.x = element_line(colour = "#D4D3CF", linewidth = 0.25),
+  panel.grid.minor.x = element_blank(),
+  strip.background = element_blank(),
+  strip.text.x = element_text(colour = "#000000", size = 6, margin = margin(b = 2, t = 2)),
+  strip.text.y = element_text(colour = "#000000", size = 6, margin = margin(l = 2)),
+  strip.clip = "off",
+  axis.ticks.x = element_line(colour = "#000000", linewidth = 0.25),
+  axis.ticks.y = element_line(colour = "#000000", linewidth = 0.25),
+  axis.ticks.length = unit(0.1, "lines"),
+  axis.title.x = element_text(colour = "#000000", size = 6, margin = margin(t = 2)),
+  axis.title.y = element_text(colour = "#000000", size = 6, margin = margin(r = 2)),
+  axis.text.x = element_text(colour = "#000000", size = 6, margin = margin(t = 2), angle = -90, hjust = 0, vjust = 0.5),
+  axis.text.y = element_text(colour = "#000000", size = 6, margin = margin(r = 2)),
+  plot.title = element_blank(),
+  legend.key = element_rect(fill = "#FFFFFF"),
+  legend.position = "none",
+  legend.justification = "left",
+  legend.key.width = unit(2, 'pt'),
+  legend.key.height = unit(2, 'pt'),
+  legend.text = element_text(colour = "#000000", size = 6, margin = margin(r = 1)),
+  legend.margin = margin(r = 0, b = 0, l = 0, t = 0),
+  legend.title = element_blank())
+```
+
+## Establishing colour pallette
+```{r}
+colour_pallette <- c("#D8C367", "#DC6B83", "#75B1CE", "#526C94", "#D4D3CF")
+```
+
+## Establishing paths to the data file and the folder to store results
+```{r}
+path_data <- "/path/to/CF_siB55a_siGWL.xlsx"
+path_results <- "/path/to/results/"
+```
+
+## Importing data
+```{r}
+data_raw <- read_excel(path_data) %>%
+  group_by(experiment, cell_line) %>%
+  mutate(count_norm = count / max(count)) %>%
+  ungroup() %>%
+  mutate(siRNA = factor(siRNA,
+                        levels = c("siCTR", "siPPP2R2A", "siMASTL", "siPPP2R2A_siMASTL"),
+                        labels = c("CTR", "PPP2R2A", "MASTL", "MASTL\nPPP2R2A")),
+         cell_line = factor(cell_line, levels = c("RPE-1", "HeLa", "BT-549")),
+         experiment = factor(experiment, labels = c("1", "2", "3")))
+
+data_summary <- data_raw %>%
+  reframe(count_mean = mean(count),
+          count_norm_mean = mean(count_norm),
+          count_sd = sd(count),
+          count_norm_sd = sd(count_norm),
+          .by = c(cell_line, siRNA, C604))
+
+data_summary 
+```
+
+## Plotting normalised colony counts
+```{r}
+graph <- ggplot() +
+  
+  geom_tile(data = data_raw,
+            aes(x = factor(C604), y = experiment, fill = count_norm),
+            colour = "#FFFFFF", linewidth = 0.2) +
+  facet_grid(cell_line ~ siRNA, switch = "y") +
+  scale_fill_gradient2(low = "#CCCCCC", mid = colour_pallette[3], high = colour_pallette[4],
+                       limits = c(0, 1), midpoint = 0.5) +
+  
+  scale_x_discrete(expand = c(0, 0)) +
+  scale_y_discrete(expand = c(0, 0), position = "right") +
+  
+  labs(x = "MASTL inhibitor C-604 (µM)", fill = "Normalised colony count") +
+  
+  graph_theme +
+  theme(strip.text.x = element_text(colour = "#000000", size = 6, margin = margin(b = 2, t = 2)),
+        strip.text.y = element_text(colour = "#000000", size = 6, margin = margin(r = 2)),
+        panel.spacing.y = unit(0.1, "lines"),
+        panel.spacing.x = unit(0.1, "lines"),
+        axis.title.y = element_blank(),
+        legend.position = "top",
+        legend.justification = "center",
+        legend.direction = "horizontal",
+        legend.key.width = unit(5, 'mm'),
+        legend.key.height = unit(1, 'mm'),
+        legend.text = element_text(colour = "#000000", size = 6, hjust = 0.5, margin = margin(t = 1)),
+        legend.margin = margin(b = -10),
+        legend.spacing.y = unit(1, "mm"),
+        legend.title = element_text(colour = "#000000", size = 6, hjust = 0.5, margin = margin(b = 1))) +
+  
+  guides(fill = guide_colourbar(title.position = "top"))
+
+ggsave(paste(path_results, "graph_colony_count_heatmap.pdf", sep = ""), graph,
+       width = 45, height = 46 , units = "mm")  
+  
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
