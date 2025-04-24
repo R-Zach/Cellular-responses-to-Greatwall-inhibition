@@ -43,7 +43,7 @@ Use data WB_C-604_ENSA-P_effect.xlsx
 
 ### R-script_WB_analysis_protein-expression.Rmd
 Analysis of protein expresion levels of B55a, GWL, PP2Ca/b and ENSA  
-Use data WB_B55a-GWL-PP2C-ENSA_protein-levels.xlsx
+Use data WB_B55a-GWL-PP2C-ENSA_protein-levels.xlsx, CF_C-604_ED50.csv
 
 
 
