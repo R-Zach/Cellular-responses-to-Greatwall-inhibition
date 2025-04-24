@@ -45,10 +45,11 @@ Use data WB_C-604_ENSA-P_effect.xlsx
 Analysis of protein expresion levels of B55a, GWL, PP2Ca/b and ENSA  
 Use data WB_B55a-GWL-PP2C-ENSA_protein-levels.xlsx, CF_C-604_ED50.csv
 
+### R-script_CF_siB55a_siGWL.Rmd
+Analysis of the impact of C-604 on colony formation capacity in cells transfected with siRNAs targetting B55a or GWL  
+Use data CF_siB55a_siGWL.xlsx
 
-
-
-
-
-
+### R-script_CF_C-604_cytostatic_effect.Rmd
+Analysis of the impact of C-604 on colony formation capacity in 12 distinct cell lines  
+Use data CF_C-604_cytostatic_effect.xlsx
 
