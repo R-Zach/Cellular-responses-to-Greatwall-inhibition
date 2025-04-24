@@ -54,11 +54,11 @@ library(FactoMineR)
 library(factoextra)
 ```
 
-## Establishing paths to data and results folders
+## Establishing paths to the data files and the folder to store results
 ```{r}
-path_data <- ### WB_B55a-GWL-PP2C-ENSA_protein-levels.xlsx
-path_data_ED50 <- ### Path to CF_C-604_ED50.csv
-path_results <- ### Path to an export folder
+path_data <- "/path/to/WB_B55a-GWL-PP2C-ENSA_protein-levels.xlsx"
+path_data_ED50 <- "/path/to/CF_C-604_ED50.csv"
+path_results <- "/path/to/results/"
 ```
 
 ## Establishing ggplot theme arguments
@@ -238,12 +238,8 @@ graph_expression <- ggplot(data = data_graph,
     panel.grid.major.y = element_blank(),
     panel.grid.major.x = element_blank())
 
-ggsave(paste(path_results, "graph_expression.pdf", sep = ""), graph_expression,
-       width = 55, height = 65 , units = "mm", device = cairo_pdf)
-```
-
 ## Plotting ED50 values
-```{r}
+
 list_cell_lines <- c("HCC1143", "HCC1395", "HCC1937", "NCI-H226", "NCI-H2228", "769-P",
                       "U2OS", "MM231", "RPE-1", "HT-1080", "HeLa", "BT-549")
 
@@ -280,12 +276,8 @@ graph_ED50 <- ggplot(data = data_graph,
     panel.grid.major.y = element_blank(),
     panel.grid.major.x = element_blank())
 
-ggsave(paste(path_results, "graph_ED50.pdf", sep = ""), graph_ED50,
-       width = 40, height = 15 , units = "mm", device = cairo_pdf)
-```
-
 ## Creating a composite graph of expresion and ED50 values
-```{r}
+
 graph_composite <- plot_grid(graph_ED50,
                              graph_expression,
                              ncol = 1, nrow = 2,
@@ -334,5 +326,3 @@ graph_graph_model_vs_empiric <- ggplot(data = data_graph, aes(x = ED50_mean, y =
 ggsave(paste(path_results, "graph_model_vs_empiric.pdf", sep = ""), graph_graph_model_vs_empiric,
        width = 37.5, height = 35 , units = "mm", device = cairo_pdf)
 ```
-
-
