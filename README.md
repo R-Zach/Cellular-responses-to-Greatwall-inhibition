@@ -1,8 +1,13 @@
 # Cellular-responses-to-Greatwall-inhibition
 Compilation of data analysis tools and procedures  
-Data can be retrieved from the following repositories:  
-The Cancer Genome Atlas (TCGA) Analysis https://doi.org/10.6084/m9.figshare.28848074  
 
+Raw data can be retrieved from the following repositories:  
+The Cancer Genome Atlas (TCGA) Analysis https://doi.org/10.6084/m9.figshare.28848074  
+Mass Spectrometry (MS) Analysis https://doi.org/10.6084/m9.figshare.28829927  
+Live Cell (LC) Imaging Analysis https://doi.org/10.6084/m9.figshare.28829915  
+Colony Formation (CF) Analysis https://doi.org/10.6084/m9.figshare.28829903  
+Immunofluorescence (IF) Microscopy Analysis https://doi.org/10.6084/m9.figshare.28829816  
+Western Blot (WB) Analysis https://doi.org/10.6084/m9.figshare.28829306
 
 ### R-script_IF_single-cell_analysis_C-604_MKI-2.Rmd
 IF microscopy analysis of cellular responses to C-604 and MKI-2 treatment  
