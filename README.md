@@ -1,5 +1,5 @@
 # Cellular-responses-to-Greatwall-inhibition
-Compilation of data analysis tools and procedures used in the publication titled: "The Balance between B55α and Greatwall expression levels predicts sensitivity to Greatwall inhibition in cancer cells" 
+Compilation of data analysis tools and procedures used in the publication titled: "The Balance between B55α and Greatwall expression levels predicts sensitivity to Greatwall inhibition in cancer cells".
 
 ### Raw data can be retrieved from the following repositories:  
 The Cancer Genome Atlas (TCGA) Analysis https://doi.org/10.6084/m9.figshare.28848074  
