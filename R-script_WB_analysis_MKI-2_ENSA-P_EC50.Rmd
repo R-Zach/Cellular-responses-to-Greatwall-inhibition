@@ -1,0 +1,231 @@
+---
+title: "GWL inhibition (EC50 Western Blots)"
+output: html_document
+date: "2023-09-20"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Loading Libraries
+```{r message=FALSE, warning=FALSE, paged.print=FALSE}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(ggforce)
+library(ggExtra)
+library(ggtext)
+library(grid)
+library(gridExtra)
+library(ggridges)
+library(ggbeeswarm)
+library(gghalves)
+library(cowplot)
+library(gplots)
+library(lattice)
+library(ggthemes)
+library(scales)
+library(seqinr)
+library(tidyverse)
+library(Dict)
+library(zoo)
+library(emdbook)
+library(PupillometryR)
+library(lemon)
+library(embed)
+library(fpc)
+library(dbscan)
+library(viridis)
+library(latex2exp)
+library(ggnewscale)
+library(ggh4x)
+library(extrafont)
+library(readxl)
+library(drc)
+library(modelr)
+```
+
+## Establoshing ggplot theme arguments
+```{r}
+graph_theme <- theme(
+  plot.margin = margin(b = 0.2, l = 0.2, t = 0.2, r = 0.2, unit = "lines"),
+  text = element_text(size = 1, family = "Arial"),
+  panel.spacing.y = unit(0.54, "mm"),
+  panel.spacing.x = unit(0.54, "mm"),
+  panel.border = element_rect(colour = "#000000", fill = NA, linewidth = 0.5),
+  panel.background = element_blank(),
+  panel.grid.major.y = element_blank(),
+  panel.grid.minor.y = element_blank(),
+  panel.grid.major.x = element_blank(),
+  panel.grid.minor.x = element_blank(),
+  strip.background = element_blank(),
+  strip.text.x = element_text(colour = "#000000", size = 6, margin = margin(b = 2, t = 2), family = "Arial"),
+  strip.text.y = element_text(colour = "#000000", size = 6, margin = margin(l = 2), family = "Arial"),
+  strip.clip = "off",
+  axis.ticks.x = element_line(colour = "#000000", linewidth = 0.35),
+  axis.ticks.y = element_line(colour = "#000000", linewidth = 0.35),
+  axis.ticks.length = unit(0.1, "lines"),
+  axis.title.x = element_text(colour = "#000000", size = 6, margin = margin(t = 3), family = "Arial"),
+  axis.title.y = element_text(colour = "#000000", size = 6, margin = margin(r = 2), family = "Arial"),
+  axis.text.x = element_text(colour = "#000000", size = 6, margin = margin(t = 2), family = "Arial"),
+  axis.text.y = element_text(colour = "#000000", size = 6, margin = margin(r = 2), family = "Arial"),
+  plot.title = element_blank(),
+  legend.key = element_rect(fill = "#FFFFFF"),
+  legend.position = "none",
+  legend.justification = "left",
+  legend.key.width = unit(2, 'pt'),
+  legend.key.height = unit(2, 'pt'),
+  legend.text = element_text(colour = "#000000", size = 6, margin = margin(r = 1), family = "Arial"),
+  legend.margin = margin(r = 0, b = 0, l = 0, t = 0),
+  legend.title = element_blank())
+```
+
+## Establishing colour pallette
+```{r}
+colour_pallette <- c("#D4D3CF", "#DC6B83", "#75B1CE", "#D8C367", "#526C94", "#000000", "#ccdba2", "#889466")
+```
+
+## Establishing paths to the data file and the folder to store results
+```{r}
+path_data <- "/path/to/WB_MKI-2_ENSA-P_effect.xlsx"
+path_results <- "/path/to/results/"
+```
+
+## Importing data
+```{r}
+data_raw <- read_excel(path_data) %>%
+  mutate(ratio = .[[4]] / .[[5]]) %>%
+  group_by(experiment, cell_line) %>%
+  mutate(treatment = concentration,
+         treatment = ifelse(treatment == "async", 0, treatment),
+         treatment = as.numeric(treatment),
+         condition = ifelse(drug == "Async", "DMSO", "STLC")) %>%
+  ungroup()
+
+data_raw
+```
+
+## Establishing EC50 values
+```{r}
+drm.func <- function (x) {
+  drm(RATIO_norm ~ treatment, 
+      fct = LL.4(),
+      data = x,
+      robust = "mean"
+      )
+}
+
+coefs.fun <- function (x) {coef(x) %>% tidy}
+graphs.fun <- function (x) {plot(x)[1:2]}
+
+data_ENSAP_models <- data_raw %>%
+  group_by(drug) %>%
+  nest() %>%
+  mutate(dr_model = map(data, drm.func),
+         coefs = map(dr_model, coefs.fun),
+         graphs = map(dr_model, graphs.fun))
+
+data_ENSAP_coefficients <- data_ENSAP_models %>%
+  dplyr::select(drug, coefs) %>%
+  unnest(coefs) %>%
+  mutate(names = case_when(names == "b:(Intercept)" ~ "slope",
+                           names == "c:(Intercept)" ~ "lower limit",
+                           names == "d:(Intercept)" ~ "upper limit",
+                           names == "e:(Intercept)" ~ "EC50")) %>%
+  spread(key = names, value = x) %>%
+  arrange(desc(EC50)) %>%
+  ungroup()
+
+data_ENSAP_models_graphs <- data_ENSAP_models %>%
+  group_by(drug) %>%
+  group_split() %>%
+  lapply((function(data) {
+    
+    tmp.drug <- unique(data$drug)
+    tmp.model <- data[[1, "graphs"]][[1]] %>%
+      mutate(drug = tmp.drug) %>%
+      dplyr::select(drug, treatment, ratio_norm = "1")
+    
+    return(tmp.model)
+
+  })) %>%
+  bind_rows()
+
+data_ENSAP_coefficients
+```
+## Plotting ENSA-P / ENSA ratios (bar plots)
+```{r}
+data_graph_ENSAP <- data_raw %>%
+  dplyr::rename(ratio_norm = RATIO_norm) %>%
+  mutate(concentration = factor(concentration, levels = sort(unique(concentration)))) %>%
+  reframe(ratio_norm_mean = mean(ratio_norm), ratio_norm_sd = sd(ratio_norm), .by = c(drug, concentration))
+
+graph_ENSAP <- ggplot(data = data_graph_ENSAP, aes(x = concentration, y = ratio_norm_mean, fill = drug)) +
+  geom_errorbar(aes(ymin = ratio_norm_mean, ymax = ratio_norm_mean + ratio_norm_sd), width = 0.5, colour = "#000000", linewidth = 0.25) +
+  geom_bar(stat = "identity", position = "identity", colour = "#000000", linewidth = 0.25, width = 0.8) +
+  facet_grid(. ~ drug, scales = "free", space = "free") +
+  scale_fill_manual(values = c(colour_pallette[1], colour_pallette[2], colour_pallette[3])) +
+  scale_y_continuous(expand = c(0, 0), limits = c(0, 1.1), breaks = c(0, 0.2, 0.4, 0.6, 0.8, 1)) +
+  labs(x = "Concentration (µM)", y = "ENSA-P / ENSA\n(normalised)") +
+  graph_theme +
+  theme(axis.text.x = element_text(colour = "#000000", size = 6, margin = margin(t = 2), angle = -90, hjust = 0, vjust = 0.5, family = "Arial"))
+  
+ggsave(paste(path_results, "graph_ENSA-P.pdf", sep = ""), graph_ENSAP,
+       width = 45, height = 35, units = "mm", device = cairo_pdf)
+```
+
+## Plotting ENSA-P / ENSA ratios (models)
+```{r}
+data_graph_EC50_model <- data_raw %>%
+  dplyr::rename(ratio_norm = RATIO_norm) %>%
+  mutate(concentration = case_when((concentration == 0 & drug == "MKI-2") ~ 0.0005,
+                                   (concentration == 0 & drug == "C-604") ~ 0.03125,
+                                   .default = concentration))
+
+data_graph_EC50_model_line <- data_ENSAP_models_graphs %>%
+  group_by(drug) %>%
+  group_split() %>%
+  lapply(function(data) {
+    
+    if (unique(data$drug == "MKI-2")) {
+      tmp.data <- filter(data, treatment >= 0.0005)
+    } else {
+      tmp.data <- filter(data, treatment >= 0.03125)
+    }
+    
+    return(tmp.data)
+  }) %>%
+  bind_rows()
+  
+graph_EC50_model <- ggplot() +
+  
+  geom_line(data = data_graph_EC50_model_line, aes(x = treatment, y = ratio_norm),
+            linewidth = 0.5, colour = colour_pallette[2]) +
+  
+  geom_point(data = data_graph_EC50_model, aes(x = concentration, y = ratio_norm, group = experiment, shape = cell_line),
+             size = 1.5, stroke = 0.35, colour = "#FFFFFF", fill = colour_pallette[3],
+             position = position_dodge(0.5)) +
+  
+  geom_text(data = data_ENSAP_coefficients, aes(x = 2, y = 1.05, label = deparse(bquote(EC[50]))), parse = TRUE,
+            family = "Arial", size = 6/.pt, hjust = 1, vjust = 1) +
+  
+  geom_text(data = data_ENSAP_coefficients, aes(x = 2, y = 0.85, label = paste(round(EC50, 3), "µM")),
+            family = "Arial", size = 6/.pt, hjust = 1, vjust = 1) +
+  
+  scale_x_continuous(trans = "log2",
+                     expand = c(0, 0),
+                     breaks = c(0.0005, 0.002, 0.008, 0.032, 0.125, 0.5, 2),
+                     labels = c(0, 0.002, 0.008, 0.032, 0.125, 0.5, 2)) +
+  scale_y_continuous(limits = c(0, 1.05), breaks = c(0, 0.25, 0.5, 0.75, 1, 1.25)) +
+  scale_shape_manual(values = c(21, 22)) +
+  labs(x = "Concentration (µM)", y = "ENSA-P / ENSA\n(normalised)") +
+  facet_grid(. ~ drug, space = "free_x", scales = "free_x", axes = "all") +
+  
+  graph_theme +
+  theme(axis.text.x = element_text(colour = "#000000", size = 6, margin = margin(t = 2), angle = -90, hjust = 0, vjust = 0.5, family = "Arial"),
+        panel.grid.minor.x = element_line(colour = colour_pallette[1], linewidth = 0.25, linetype = 2))
+
+ggsave(paste(path_results, "graph_EC50_model.pdf", sep = ""), graph_EC50_model,
+       width = 60, height = 31, units = "mm", device = cairo_pdf)
+```
