@@ -41,9 +41,13 @@ Use data TCGA_gene_list.xlsx
 Analysis of TCGA expression profiles of GWL and B55a  
 Use data TCGA_gene_list.xlsx, TCGA_processed_RNA-Seq_data.csv
 
-### R-script_WB_analysis_ENSA-P_EC50.Rmd
-Analysis of EC50 values derived from phospho-ENSA(S67)/ARPP19(S62) changes following Greatwall inhibition  
+### R-script_WB_analysis_C-604_ENSA-P_EC50.Rmd
+Analysis of EC50 values derived from phospho-ENSA(S67)/ARPP19(S62) changes following Greatwall inhibition by C-604  
 Use data WB_C-604_ENSA-P_effect.xlsx
+
+### R-script_WB_analysis_MKI-2_ENSA-P_EC50.Rmd
+Analysis of EC50 values derived from phospho-ENSA(S67)/ARPP19(S62) changes following Greatwall inhibition by MKI-2  
+Use data WB_MKI-2_ENSA-P_effect.xlsx
 
 ### R-script_WB_analysis_protein-expression.Rmd
 Analysis of protein expresion levels of B55a, GWL, PP2Ca/b and ENSA  
