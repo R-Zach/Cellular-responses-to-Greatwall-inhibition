@@ -1,5 +1,8 @@
 # Cellular-responses-to-Greatwall-inhibition
-Compilation of data analysis tools and procedures
+Compilation of data analysis tools and procedures  
+Data can be retrieved from the following repositories:  
+The Cancer Genome Atlas (TCGA) Analysis https://doi.org/10.6084/m9.figshare.28848074  
+
 
 ### R-script_IF_single-cell_analysis_C-604_MKI-2.Rmd
 IF microscopy analysis of cellular responses to C-604 and MKI-2 treatment  
@@ -60,4 +63,3 @@ Use data CF_siB55a_siGWL.xlsx
 ### R-script_CF_C-604_cytostatic_effect.Rmd
 Analysis of the impact of C-604 on colony formation capacity in 12 distinct cell lines  
 Use data CF_C-604_cytostatic_effect.xlsx
-
