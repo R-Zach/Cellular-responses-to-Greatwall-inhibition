@@ -86,15 +86,15 @@ graph_theme <- theme(
 colour_pallette <- c("#D4D3CF", "#DC6B83", "#75B1CE", "#D8C367", "#526C94", "#000000", "#ccdba2", "#889466")
 ```
 
-## Establishing paths to data and results folders
+## Establishing paths to the data file and the folder to store results
 ```{r}
-path_data <- ### Path to WB_C-604_ENSA-P_effect.xlsx
-path_results <- ### Path to an export folder
+path_data <- "/path/to/WB_C-604_ENSA-P_effect.xlsx"
+path_results <- "/path/to/results/"
 ```
 
 ## Importing data
 ```{r}
-data_raw <- read_excel(paste(path_data, "Quantification.xlsx", sep = ""), sheet = "Quantification") %>%
+data_raw <- read_excel(path_data, sheet = "Quantification") %>%
   mutate(ratio = .[[4]] / .[[5]]) %>%
   group_by(experiment, cell_line) %>%
   mutate(ratio_norm = ratio / max(ratio),
@@ -319,9 +319,6 @@ graph_ENSAP_EC50 <- ggplot() +
   graph_theme +
   theme(axis.title.x = element_blank(),
         axis.text.x = element_text(colour = "#000000", size = 6, margin = margin(t = 2), angle = -90, hjust = 0, vjust = 0.5, family = "Arial"))
-
-ggsave(paste(path_results, "graph_ENSAP_EC50.pdf", sep = ""), graph_ENSAP_EC50,
-       width = 25, height = 35, units = "mm", device = cairo_pdf)
   
 graph_composite <- plot_grid(
   graph_ENSAP_EC50,
@@ -330,7 +327,7 @@ graph_composite <- plot_grid(
   rel_widths = c(2.5, 4),
   align = "h")
 
-ggsave(paste(path_results, "graph_EC5_p_composite.pdf", sep = ""), graph_composite,
+ggsave(paste(path_results, "graph_EC50_p-values.pdf", sep = ""), graph_composite,
        width = 55, height = 35, units = "mm", device = cairo_pdf)
 ```
 
